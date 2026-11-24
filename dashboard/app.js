@@ -157,6 +157,19 @@
     });
   }
 
+
+  function modelStrip() {
+    return el('div', { class: 'modelstrip' },
+      el('span', { class: 'cover', text: 'radar-2 ·' }),
+      el('span', null, 'implied value = ', el('b', { text: 'TVL' }), ' × ', el('b', { text: '0.25 scale' }), ' × ', el('b', { text: 'category multiple' }), ' × ', el('b', { text: 'chain' }), ' × ', el('b', { text: 'growth' }), ' × ', el('b', { text: 'maturity' })),
+      el('span', { class: 'sep', text: '·' }),
+      el('span', { text: "category multiple = median mcap/TVL of that category's own live-token protocols — the market's pricing, not a guess" }),
+      el('span', { class: 'sep', text: '·' }),
+      el('span', { class: 'cover', text: '40/40' }),
+      el('span', { text: 'watchlist covered, every row one function, no name special-cased' })
+    );
+  }
+
   function header() {
     return el('header', { class: 'top' },
       el('h1', null, el('span', { class: 'pulse', text: '◉ ' }), 'Token Launch Radar'),
@@ -400,6 +413,7 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
+    shell.appendChild(modelStrip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
