@@ -35,7 +35,8 @@
     var sig = function (z) { return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z)))); };
     var age = (row.age_days === null || row.age_days === undefined ? m.unknown_age_days : row.age_days) / 365;
     var growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d)) / 100;
-    var odds = sig(fit.odds.intercept + fit.odds.ln_tvl * Math.log(Math.max(row.tvl_usd, 1)) + fit.odds.years * age + fit.odds.growth100 * growth);
+    var shift = (fit.odds_family_shifts || {})[row.category || 'Other'] || 0;
+    var odds = sig(fit.odds.intercept + fit.odds.ln_tvl * Math.log(Math.max(row.tvl_usd, 1)) + fit.odds.years * age + fit.odds.growth100 * growth + shift);
     var valueIf = Math.exp(fit.value.intercept + fit.value.ln_tvl * Math.log(Math.max(row.tvl_usd, 1)));
     return Math.max(1, Math.round(valueIf * odds));
   }
@@ -343,22 +344,24 @@
       chains.map(function (c) { return el('option', { value: c, text: c, selected: c === state.chain ? 'selected' : null }); })
     );
     chainSel.addEventListener('change', function () { state.chain = chainSel.value; writeHash(); render(); });
-    var earlyTog = el('button', { type: 'button', class: 'tog' + (state.early ? ' on' : ''), 'aria-pressed': state.early ? 'true' : 'false', onclick: function () { state.early = !state.early; writeHash(); render(); } },
-      el('span', { class: 'dot' }), 'early finds only');
-    var verdictSel = el('select', { id: 'verdict', 'aria-label': 'Filter by verdict' },
-      el('option', { value: 'all', text: 'All verdicts' }),
-      ['farm', 'marginal', 'skip'].map(function (v) { return el('option', { value: v, text: v, selected: state.verdict === v ? 'selected' : null }); })
-    );
-    verdictSel.addEventListener('change', function () { state.verdict = verdictSel.value; writeHash(); render(); });
+    var counts = { all: DATA.rows.length, farm: 0, marginal: 0, skip: 0 };
+    DATA.rows.forEach(function (r) { var f = farmOf(r); counts[f.verdict] += 1; });
+    var verdictPills = el('div', { class: 'pillrow' }, ['all', 'farm', 'marginal', 'skip'].map(function (v) {
+      return el('button', { type: 'button', class: 'pill' + (state.verdict === v ? ' on' : ''), onclick: function () { state.verdict = v; writeHash(); render(); } },
+        el('span', null, v === 'all' ? 'All' : v), el('b', { text: String(counts[v]) }));
+    }));
+    var tierPills = el('div', { class: 'pillrow' }, [
+      el('button', { type: 'button', class: 'pill' + (!state.early ? ' on' : ''), onclick: function () { state.early = false; writeHash(); render(); } }, 'Watchlist + early'),
+      el('button', { type: 'button', class: 'pill' + (state.early ? ' on' : ''), onclick: function () { state.early = true; writeHash(); render(); } }, 'Early only')
+    ]);
     var pre = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-token', onclick: function () { state.tab = 'pre-token'; render(); } });
     var live = el('button', { type: 'button', 'aria-pressed': state.tab === 'live' ? 'true' : 'false', text: 'Live token', onclick: function () { state.tab = 'live'; render(); } });
     return el('div', { class: 'controls' },
       el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
       el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), chainSel),
-      el('div', { class: 'field' }, el('label', { for: 'verdict', text: 'Verdict' }), verdictSel),
+      el('div', { class: 'field' }, el('label', { text: 'Verdict' }), verdictPills),
       el('div', { class: 'field' }, el('label', { text: 'Board' }), el('div', { class: 'tabs' }, pre, live)),
-      el('div', { class: 'field' }, el('label', { text: 'Radar' }), earlyTog),
       el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' of ' + DATA.rows.length + ' rows' : DATA.live.length + ' live-token protocols' })
     );
   }
@@ -409,7 +412,7 @@
           el('b', { text: fmtUsd(r.implied_value_usd) }),
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' }))
         )),
-        el('td', { class: 'num rng', title: 'P25–P75: ' + fmtUsd(r.p25_usd) + ' – ' + fmtUsd(r.p75_usd), text: fmtUsd(r.p25_usd) + '–' + fmtUsd(r.p75_usd) }),
+        el('td', { class: 'num rng', title: 'P25–P75: ' + fmtUsd(r.p25_usd) + ' – ' + fmtUsd(r.p75_usd) + ' — the honest value band; within it the order of the board is not settled, the verdict column is what to farm on', text: fmtUsd(r.p25_usd) + '–' + fmtUsd(r.p75_usd) }),
         el('td', null, el('span', { class: 'verdict v-' + r.scenario_verdict, text: r.scenario_verdict.toUpperCase() })),
         el('td', { class: 'num ' + (r.scenario_net_usd > 0 ? 'pos' : 'neg') }, el('b', { text: (r.scenario_net_usd > 0 ? '+$' : '−$') + Math.abs(r.scenario_net_usd).toFixed(0) }), el('span', { class: 'brk', text: 'drop $' + r.scenario_drop_usd.toFixed(0) + ' − fees $' + r.scenario_fees_usd.toFixed(0) + ' · $' + r.scenario_net_per_hour.toFixed(1) + '/h' }))
       );
@@ -529,6 +532,7 @@
           mrow('× token odds (logistic: years +' + fit.odds.years.toFixed(2) + ', growth ' + fit.odds.growth100.toFixed(1) + ')', (row.odds * 100).toFixed(0) + '%', row.odds * 100, growth < 0 ? 'red' : ''),
           mrow('= implied value', fmtUsd(row.implied_value_usd), 100, 'gold')
         ),
+        el('div', { class: 'xcheck' }, 'rank range ' + row.rank_lo + '–' + row.rank_hi + ' of ' + DATA.board_size + ': within the model band the order of the board is not settled — farm on the verdict, not the rank'),
         el('div', { class: 'xcheck' + (re === row.implied_value_usd ? ' ok' : '') }, re === row.implied_value_usd ? '✓ the page recomputes this row to ' + fmtUsd(re) + ', the same number board.json carries' : '⚠ the page recomputes ' + fmtUsd(re) + ', which differs from the board: the data would be stale'),
         el('p', { class: 'sub', style: 'margin-top:8px', text: 'Model ' + DATA.model_version + ': fitted on the snapshot itself — value on ' + fit.live_count + ' live tokens (LOO R² ' + fit.value_loo_r2.toFixed(2) + '), odds on ' + fit.protocol_count + ' protocols (Brier ' + fit.odds_brier.toFixed(3) + ' vs ' + fit.odds_brier_base.toFixed(3) + ' base). This is an estimate, not a price.' })
       ),

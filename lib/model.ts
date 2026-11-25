@@ -103,6 +103,8 @@ export interface BoardRow {
   token_status: 'pre-token';
   age_days: number | null;
   implied_value_usd: number;
+  rank_lo: number;
+  rank_hi: number;
   model: {
     odds: number;
     value_if_launch_usd: number;
@@ -137,6 +139,8 @@ export interface RadarRow {
   net_per_hour: number;
   parent: string | null;
   early: boolean;
+  rank_lo: number;
+  rank_hi: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -190,6 +194,9 @@ export interface Fit {
   odds_wf_brier_base: number;
   band_cover_50: number;
   band_cover_80: number;
+  odds_family_delta: number | null;
+  family_count: number;
+  odds_family_shifts: Record<string, number>;
   ablation: { terms: string; loo_r2: number; wf_mae: number }[];
   odds_ablation: { terms: string; brier: number }[];
   accounting: { total: number; traded: number; pre_token: number; ranked: number; excluded: number };
@@ -375,6 +382,32 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   // The kept set: tvl only — the ablation table shows growth, age, chains and category all
   // fail to improve the held-out miss, so the value curve keeps log TVL alone.
 
+  // Category families in the odds: the same logistic plus a family log-odds shift per category,
+  // fitted by coordinate ascent on the in-sample Brier, kept only if the walk-forward Brier improves.
+  const families = Array.from(new Set(protocols.map((p) => p.category ?? 'Other'))).sort();
+  const famIdx = new Map(families.map((c, i) => [c, i]));
+  const shifts = new Array(families.length).fill(0);
+  const famOf = (i: number): number => famIdx.get(protocols[i]!.category ?? 'Other')!;
+  for (let round = 0; round < 3; round++) {
+    for (let f = 0; f < families.length; f++) {
+      let bestShift = shifts[f]!;
+      let bestLoss = Infinity;
+      for (const cand of [-0.4, -0.2, -0.1, 0, 0.1, 0.2, 0.4]) {
+        let loss = 0;
+        for (let i = 0; i < n; i++) {
+          if (famOf(i) !== f) continue;
+          const z = w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]! + shifts.reduce((s, sh, g) => (g === f ? s + cand : s + sh), 0);
+          const ph = sigmoid(z);
+          loss += (ph - y[i]!) ** 2;
+        }
+        if (loss < bestLoss) { bestLoss = loss; bestShift = cand; }
+      }
+      shifts[f] = bestShift;
+    }
+  }
+  const phFam = protocols.map((_, i) => sigmoid(w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]! + shifts[famOf(i)]!));
+  const brierFam = phFam.reduce((s, p, i) => s + (p - y[i]!) ** 2, 0) / n;
+
   // Walk-forward Brier for the odds: the earlier-listed 70% of protocols fit the later 30%.
   const agesAll = protocols.map((p) => ageDays(snapshot.as_of, p.listed_at) ?? medAge);
   const orderAll = protocols.map((_, i) => i).sort((a, b) => agesAll[a]! - agesAll[b]!);
@@ -400,11 +433,21 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   wfBaseRate = wfBaseRate / Math.max(1, testIdx.length);
   const wfBrierBase = testIdx.reduce((s, i) => s + (wfBaseRate - y[i]!) ** 2, 0) / Math.max(1, testIdx.length);
 
+  // the family shifts are tested walk-forward too: apply the fitted shifts to the walk-forward model
+  let wfBrierFam = 0;
+  for (const i of testIdx) {
+    const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]! + shifts[famOf(i)]!;
+    wfBrierFam += (sigmoid(z) - y[i]!) ** 2;
+  }
+  const wfFamMean = wfBrierFam / Math.max(1, testIdx.length);
+  const familyKept = wfFamMean < wfBrier / Math.max(1, testIdx.length) - 0.0005;
+
   // Odds ablation: in-sample, walk-forward, base rate
   const oddsAblation: { terms: string; brier: number }[] = [
     { terms: 'full (in-sample)', brier: Math.round(brier * 1000) / 1000 },
     { terms: 'walk-forward', brier: Math.round((wfBrier / Math.max(1, testIdx.length)) * 1000) / 1000 },
     { terms: 'base rate (walk-forward)', brier: Math.round(wfBrierBase * 1000) / 1000 },
+    { terms: 'families ' + (familyKept ? 'kept: WF ' + wfFamMean.toFixed(3) : 'dropped: WF ' + wfFamMean.toFixed(3) + ' no better'), brier: Math.round(brierFam * 1000) / 1000 },
   ];
   for (const drop of [1, 2, 3]) {
     const w2 = w.slice();
@@ -444,6 +487,9 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     odds_wf_brier_base: wfBrierBase,
     band_cover_50: cover50 / lv.length,
     band_cover_80: cover80 / lv.length,
+    odds_family_delta: familyKept ? wfFamMean - wfBrier / Math.max(1, testIdx.length) : null,
+    family_count: families.length,
+    odds_family_shifts: familyKept ? Object.fromEntries(families.map((c, i) => [c, shifts[i]!])) : {},
     ablation,
     odds_ablation: oddsAblation,
     accounting,
@@ -463,7 +509,8 @@ export function tokenOdds(p: SnapshotProtocol, asOf: string, fit: Fit, model: Mo
   const medAge = model.unknown_age_days;
   const age = (ageDays(asOf, p.listed_at) ?? medAge) / 365;
   const growth = Math.min(model.growth_cap, Math.max(model.growth_floor, finite(p.change_7d, 0))) / 100;
-  return sigmoid(fit.odds.intercept + fit.odds.ln_tvl * Math.log(Math.max(p.tvl_usd, 1)) + fit.odds.years * age + fit.odds.growth100 * growth);
+  const shift = (fit.odds_family_shifts ?? {})[p.category ?? 'Other'] ?? 0;
+  return sigmoid(fit.odds.intercept + fit.odds.ln_tvl * Math.log(Math.max(p.tvl_usd, 1)) + fit.odds.years * age + fit.odds.growth100 * growth + shift);
 }
 
 /** What the token would be worth if it launches: the fitted value curve, alone. */
@@ -578,8 +625,24 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     return { p, implied, odds, valueIf, p25, p75, age, farm, parent };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  // The rank range: how many rows this row's P25-P75 band overlaps, so the rank itself carries its uncertainty
+  const lows = scored.map((s) => s.p25);
+  const highs = scored.map((s) => s.p75);
+  const rankBounds = scored.map((s) => {
+    let lo = 1;
+    let hi = scored.length;
+    for (let j = 0; j < scored.length; j++) {
+      if (highs[j]! >= s.p25) { lo = j + 1; break; }
+    }
+    for (let j = scored.length - 1; j >= 0; j--) {
+      if (lows[j]! <= s.p75) { hi = j + 1; break; }
+    }
+    return [Math.min(lo, hi), Math.max(lo, hi)] as const;
+  });
   return scored.map((s, i) => ({
     rank: i + 1,
+    rank_lo: rankBounds[i]![0],
+    rank_hi: rankBounds[i]![1],
     slug: s.p.slug,
     name: s.p.name,
     category: s.p.category,
@@ -759,6 +822,8 @@ export function radarRow(row: BoardRow, early: boolean): RadarRow {
     net_per_hour: row.farm.net_per_hour,
     parent: row.parent,
     early,
+    rank_lo: row.rank_lo,
+    rank_hi: row.rank_hi,
   };
 }
 
