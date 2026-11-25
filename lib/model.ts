@@ -197,6 +197,8 @@ export interface Fit {
   odds_family_delta: number | null;
   family_count: number;
   odds_family_shifts: Record<string, number>;
+  value_ln_tvl_se: number;
+  value_intercept_se: number;
   ablation: { terms: string; loo_r2: number; wf_mae: number }[];
   odds_ablation: { terms: string; brier: number }[];
   accounting: { total: number; traded: number; pre_token: number; ranked: number; excluded: number };
@@ -462,6 +464,34 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   const rankable = protocols.filter((p) => isRankable(p, live2)).length;
   const accounting = { total: n, traded: n - preToken, pre_token: preToken, ranked: rankable, excluded: preToken - rankable };
 
+  // Bootstrap standard errors for the value curve: 200 resamples of the live protocols, refit each.
+  const bootSe = new Array(2).fill(0);
+  {
+    const slopes: number[] = [];
+    const intercepts: number[] = [];
+    let seed = 20260214; // a fixed LCG: deterministic across runs
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    };
+    for (let b = 0; b < 200; b++) {
+      const Xb: number[][] = [];
+      const yb: number[] = [];
+      for (let i = 0; i < lv.length; i++) {
+        const j = Math.floor(rnd() * lv.length);
+        Xb.push([1, lv[j]!.lnTvl]);
+        yb.push(lv[j]!.lnMcap);
+      }
+      const bb = solve(Xb, yb);
+      intercepts.push(bb[0]!);
+      slopes.push(bb[1]!);
+    }
+    const meanS = slopes.reduce((s, v) => s + v, 0) / slopes.length;
+    const meanI = intercepts.reduce((s, v) => s + v, 0) / intercepts.length;
+    bootSe[1] = Math.sqrt(slopes.reduce((s, v) => s + (v - meanS) ** 2, 0) / (slopes.length - 1));
+    bootSe[0] = Math.sqrt(intercepts.reduce((s, v) => s + (v - meanI) ** 2, 0) / (intercepts.length - 1));
+  }
+
   // Is the printed range honest? The share of live protocols whose actual market cap falls
   // inside the model's P25-P75 and P10-P90 bands, measured on the same fit.
   let cover50 = 0;
@@ -490,6 +520,8 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     odds_family_delta: familyKept ? wfFamMean - wfBrier / Math.max(1, testIdx.length) : null,
     family_count: families.length,
     odds_family_shifts: familyKept ? Object.fromEntries(families.map((c, i) => [c, shifts[i]!])) : {},
+    value_ln_tvl_se: bootSe[1]!,
+    value_intercept_se: bootSe[0]!,
     ablation,
     odds_ablation: oddsAblation,
     accounting,
