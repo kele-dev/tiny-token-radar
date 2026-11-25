@@ -199,6 +199,7 @@ export interface Fit {
   odds_family_shifts: Record<string, number>;
   value_ln_tvl_se: number;
   value_intercept_se: number;
+  bootstrap: { i: number; s: number }[];
   ablation: { terms: string; loo_r2: number; wf_mae: number }[];
   odds_ablation: { terms: string; brier: number }[];
   accounting: { total: number; traded: number; pre_token: number; ranked: number; excluded: number };
@@ -466,6 +467,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
 
   // Bootstrap standard errors for the value curve: 200 resamples of the live protocols, refit each.
   const bootSe = new Array(2).fill(0);
+  let bootPairs: { i: number; s: number }[] = [];
   {
     const slopes: number[] = [];
     const intercepts: number[] = [];
@@ -490,6 +492,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     const meanI = intercepts.reduce((s, v) => s + v, 0) / intercepts.length;
     bootSe[1] = Math.sqrt(slopes.reduce((s, v) => s + (v - meanS) ** 2, 0) / (slopes.length - 1));
     bootSe[0] = Math.sqrt(intercepts.reduce((s, v) => s + (v - meanI) ** 2, 0) / (intercepts.length - 1));
+    bootPairs = intercepts.map((iv, b) => ({ i: iv, s: slopes[b]! }));
   }
 
   // Is the printed range honest? The share of live protocols whose actual market cap falls
@@ -522,6 +525,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     odds_family_shifts: familyKept ? Object.fromEntries(families.map((c, i) => [c, shifts[i]!])) : {},
     value_ln_tvl_se: bootSe[1]!,
     value_intercept_se: bootSe[0]!,
+    bootstrap: bootPairs,
     ablation,
     odds_ablation: oddsAblation,
     accounting,
@@ -657,24 +661,30 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     return { p, implied, odds, valueIf, p25, p75, age, farm, parent };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  // The rank range: how many rows this row's P25-P75 band overlaps, so the rank itself carries its uncertainty
-  const lows = scored.map((s) => s.p25);
-  const highs = scored.map((s) => s.p75);
-  const rankBounds = scored.map((s) => {
-    let lo = 1;
-    let hi = scored.length;
-    for (let j = 0; j < scored.length; j++) {
-      if (highs[j]! >= s.p25) { lo = j + 1; break; }
+  // The rank range under fit uncertainty: each bootstrap refit re-prices every row (odds fixed),
+  // the row is re-ranked under it, and the P10-P90 of its ranks is the range shown.
+  const boot = fit.bootstrap.length ? fit.bootstrap : [{ i: valueBeta0, s: valueBeta1 }];
+  const rankSpread = scored.map(() => ({ p10: 0, p90: 0 }));
+  for (const r of rankSpread) Object.assign(r, { p10: 0, p90: 0 });
+  {
+    const nBoot = Math.min(60, boot.length); // 60 refits suffice for a P10-P90 and keep the run fast
+    const allRanks: number[][] = scored.map(() => []);
+    for (let b = 0; b < nBoot; b++) {
+      const priced = scored.map((s) => Math.exp(boot[b]!.i + boot[b]!.s * Math.log(Math.max(s.p.tvl_usd, 1))) * s.odds);
+      const order = priced.map((v, i) => ({ v, i })).sort((a, c) => c.v - a.v || a.i - c.i);
+      order.forEach((o, position) => { allRanks[o.i]!.push(position + 1); });
     }
-    for (let j = scored.length - 1; j >= 0; j--) {
-      if (lows[j]! <= s.p75) { hi = j + 1; break; }
-    }
-    return [Math.min(lo, hi), Math.max(lo, hi)] as const;
-  });
+    scored.forEach((_, i) => {
+      const rs = allRanks[i]!.slice().sort((a, c) => a - c);
+      rankSpread[i] = { p10: rs[Math.floor(nBoot * 0.1)]!, p90: rs[Math.min(nBoot - 1, Math.ceil(nBoot * 0.9))]! };
+    });
+  }
+  const valueBeta0 = fit.value.intercept;
+  const valueBeta1 = fit.value.ln_tvl;
   return scored.map((s, i) => ({
     rank: i + 1,
-    rank_lo: rankBounds[i]![0],
-    rank_hi: rankBounds[i]![1],
+    rank_lo: rankSpread[i]!.p10,
+    rank_hi: rankSpread[i]!.p90,
     slug: s.p.slug,
     name: s.p.name,
     category: s.p.category,

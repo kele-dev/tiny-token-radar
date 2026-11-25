@@ -397,7 +397,7 @@
         onclick: function () { openDetail(r.slug); },
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
-        el('td', { class: 'rk' }, r.rank <= 3 ? el('b', { text: String(r.rank) }) : String(r.rank)),
+        el('td', { class: 'rk' }, r.rank <= 3 ? el('b', { text: String(r.rank) }) : String(r.rank), el('span', { class: 'rr', text: r.rank_lo + '–' + r.rank_hi })),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
           el('span', { class: 'sub' }, [el('span', { class: 'cat', text: r.category || 'Other' }), r.early ? el('span', { class: 'early-tag', text: ' EARLY' }) : el('span', { class: 'wl-tag', text: 'WATCHLIST' }), r.parent ? el('span', { class: 'early-tag', style: 'color: var(--down)', text: ' PARENT ×0.5' }) : null, el('div', { class: 'chips', style: 'margin-top:3px' }, chips)])
@@ -532,7 +532,7 @@
           mrow('× token odds (logistic: years +' + fit.odds.years.toFixed(2) + ', growth ' + fit.odds.growth100.toFixed(1) + ')', (row.odds * 100).toFixed(0) + '%', row.odds * 100, growth < 0 ? 'red' : ''),
           mrow('= implied value', fmtUsd(row.implied_value_usd), 100, 'gold')
         ),
-        el('div', { class: 'xcheck' }, 'rank range ' + row.rank_lo + '–' + row.rank_hi + ' of ' + DATA.board_size + ': within the model band the order of the board is not settled — farm on the verdict, not the rank'),
+        el('div', { class: 'xcheck' }, 'rank range ' + row.rank_lo + '–' + row.rank_hi + ' of ' + DATA.board_size + ' across 60 bootstrap refits of the value curve — the fit is this sure of the order'),
         el('div', { class: 'xcheck' + (re === row.implied_value_usd ? ' ok' : '') }, re === row.implied_value_usd ? '✓ the page recomputes this row to ' + fmtUsd(re) + ', the same number board.json carries' : '⚠ the page recomputes ' + fmtUsd(re) + ', which differs from the board: the data would be stale'),
         el('p', { class: 'sub', style: 'margin-top:8px', text: 'Model ' + DATA.model_version + ': fitted on the snapshot itself — value on ' + fit.live_count + ' live tokens (LOO R² ' + fit.value_loo_r2.toFixed(2) + '), odds on ' + fit.protocol_count + ' protocols (Brier ' + fit.odds_brier.toFixed(3) + ' vs ' + fit.odds_brier_base.toFixed(3) + ' base). This is an estimate, not a price.' })
       ),
