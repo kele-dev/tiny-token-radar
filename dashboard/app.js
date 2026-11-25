@@ -311,16 +311,16 @@
     var top = DATA.rows[0] || { implied_value_usd: 0, name: '—' };
     return el('section', { class: 'lede' },
       el('div', null,
-        el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by what their token would be worth' }),
+        el('h1', { text: DATA.watchlist_size + ' pre-token protocols, ranked by expected launch value' }),
         el('p', { html: 'Every protocol with <b>$' + Math.round(DATA.floor_usd / 1e6) + 'M</b> or more of TVL and no token on record sits on the watchlist. Category launch multiples are calibrated from the market\'s own live-token protocols, growth and maturity adjust them, and the <b>early radar</b> adds ' + DATA.early_size + ' pre-token finds below the floor. Implied value is a model, not a promise.' })
       ),
       el('div', { class: 'facts' },
-        el('div', { class: 'fact' }, el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size }), el('span', { text: 'watchlist covered' })),
-        el('div', { class: 'fact' }, el('b', { text: String(DATA.board_size) }), el('span', { text: 'rows scored' })),
-        el('div', { class: 'fact' }, el('b', { text: (DATA.fit.odds_brier).toFixed(3) + ' vs ' + DATA.fit.odds_brier_base.toFixed(3) }), el('span', { text: 'token-odds Brier vs base' })),
-        el('div', { class: 'fact' }, el('b', { text: (DATA.fit.value_loo_r2).toFixed(2) }), el('span', { text: 'value LOO R² (TVL only: growth, age tested and dropped)' })),
-        el('div', { class: 'fact' }, el('b', { text: String(DATA.fit.live_count) + ' / ' + String(DATA.fit.protocol_count) }), el('span', { text: 'live-token protocols the fit uses' })),
-        el('div', { class: 'fact' }, el('b', { text: fmtUsd(top.implied_value_usd) }), el('span', { text: 'top implied value' }))
+        el('div', { class: 'fact' }, el('b', { text: DATA.watchlist_size + '/' + DATA.watchlist_size }), el('span', { text: 'watchlist' })),
+        el('div', { class: 'fact' }, el('b', { text: String(DATA.board_size) }), el('span', { text: 'rows' })),
+        el('div', { class: 'fact' }, el('b', { text: DATA.fit.odds_brier.toFixed(3) }), el('span', { text: 'odds Brier < ' + DATA.fit.odds_brier_base.toFixed(3) + ' base' })),
+        el('div', { class: 'fact' }, el('b', { text: DATA.fit.value_loo_r2.toFixed(2) }), el('span', { text: 'value LOO R²' })),
+        el('div', { class: 'fact' }, el('b', { text: String(DATA.fit.live_count) }), el('span', { text: 'live tokens fit' })),
+        el('div', { class: 'fact' }, el('b', { text: fmtUsd(top.implied_value_usd) }), el('span', { text: 'top implied' }))
       )
     );
   }
@@ -560,7 +560,7 @@
 
   function render() {
     app.textContent = '';
-    var shell = el('div', { class: 'shell' });
+    var shell = el('div', { class: 'shell compact' });
     shell.appendChild(header());
     shell.appendChild(lede());
     shell.appendChild(modelStrip());
