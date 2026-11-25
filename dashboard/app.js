@@ -7,7 +7,7 @@
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', verdict: 'all', early: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null, deposit: null, share: null, horizon: null };
+  var state = { q: '', category: 'all', chain: 'all', verdict: 'all', early: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null, scale: null, share: null, horizon: null };
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -135,14 +135,14 @@
   // scenario sliders, exactly as main.ts does for the committed defaults.
   function scenario() {
     return {
-      deposit: state.deposit === null ? DATA.model.deposit_usd : state.deposit,
+      scale: state.scale === null ? 0.02 : state.scale,
       share: state.share === null ? DATA.model.drop_share : state.share,
       horizon: state.horizon === null ? DATA.model.horizon_weeks : state.horizon,
     };
   }
   function farmOf(r) {
     var sc = scenario();
-    var deposit = Math.min(sc.deposit, Math.max(100, Math.round(r.tvl_usd * 0.005)));
+    var deposit = Math.min(50000, Math.max(500, Math.round(r.tvl_usd * sc.scale)));
     var drop = sc.share * r.implied_value_usd * (deposit / Math.max(r.tvl_usd, 1));
     var fees = DATA.model.gas_usd * 2 + deposit * 0.001 + deposit * 0.05 * (sc.horizon / 52);
     var net = drop - fees;
@@ -227,7 +227,7 @@
     } });
     return el('div', { class: 'scenario' },
       el('b', { style: 'color: var(--accent2)', text: 'FARM SCENARIO' }),
-      slider('deposit', 'deposit $', 1000, 50000, 500, function (v) { return '$' + (v / 1000).toFixed(0) + 'k'; }),
+      slider('scale', 'position', 0.005, 0.1, 0.005, function (v) { return (v * 100).toFixed(1) + '% of TVL'; }),
       slider('share', 'drop share', 0.02, 0.2, 0.005, function (v) { return (v * 100).toFixed(1) + '%'; }),
       slider('horizon', 'horizon', 4, 52, 4, function (v) { return v + 'wk'; }),
       el('span', { text: '— every row below recomputes live' }),
@@ -288,7 +288,7 @@
       el('span', { class: 'sep', text: '·' }),
       el('span', { text: 'value-if-launch: log mcap ~ log TVL on ' + fit.live_count + ' live tokens (LOO R² ' + fit.value_loo_r2.toFixed(2) + '; growth and age tested, they worsened it: dropped)' }),
       el('span', { class: 'sep', text: '·' }),
-      el('span', { text: 'odds: logistic on ' + fit.protocol_count + ' protocols (Brier ' + fit.odds_brier.toFixed(3) + ' vs base ' + fit.odds_brier_base.toFixed(3) + ')' }),
+      el('span', { text: 'odds: logistic on ' + fit.protocol_count + ' protocols (Brier ' + fit.odds_brier.toFixed(3) + ' vs base ' + fit.odds_brier_base.toFixed(3) + '; walk-forward ' + fit.odds_wf_brier.toFixed(3) + ' vs ' + fit.odds_wf_brier_base.toFixed(3) + ')' }),
       el('span', { class: 'sep', text: '·' }),
       el('span', { class: 'cover', text: '40/40' }),
       el('span', { text: 'watchlist covered' })
@@ -394,7 +394,7 @@
         el('td', { class: 'rk' }, r.rank <= 3 ? el('b', { text: String(r.rank) }) : String(r.rank)),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
-          el('span', { class: 'sub' }, [el('span', { class: 'cat', text: r.category || 'Other' }), r.early ? el('span', { class: 'early-tag', text: ' EARLY' }) : null, el('div', { class: 'chips', style: 'margin-top:3px' }, chips)])
+          el('span', { class: 'sub' }, [el('span', { class: 'cat', text: r.category || 'Other' }), r.early ? el('span', { class: 'early-tag', text: ' EARLY' }) : null, r.parent ? el('span', { class: 'early-tag', style: 'color: var(--down)', text: ' PARENT ×0.5' }) : null, el('div', { class: 'chips', style: 'margin-top:3px' }, chips)])
         )),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + growthClass, text: growth }),
@@ -532,8 +532,8 @@
       el('section', { class: 'detail-section' },
         el('h3', { text: 'Farming, this scenario' }),
         el('div', { class: 'dstats' },
-          el('div', { class: 'dstat' }, el('div', { class: 'v', text: '$' + DATA.model.deposit_usd.toLocaleString() }), el('div', { class: 'k', text: 'deposit (0.5% of TVL cap)' })),
-          el('div', { class: 'dstat' }, el('div', { class: 'v', text: '$' + (row.net_usd + DATA.model.gas_usd * 2 + Math.min(DATA.model.deposit_usd, Math.max(100, Math.round(row.tvl_usd * 0.005))) * 0.001).toFixed(0) }), el('div', { class: 'k', text: 'expected drop (' + (DATA.model.drop_share * 100).toFixed(0) + '% share)' })),
+          el('div', { class: 'dstat' }, el('div', { class: 'v', text: '$' + Math.min(50000, Math.max(500, Math.round(row.tvl_usd * 0.02))).toLocaleString() }), el('div', { class: 'k', text: 'deposit (2% of TVL, $500–$50k)' })),
+          el('div', { class: 'dstat' }, el('div', { class: 'v', text: '$' + (row.net_usd + DATA.model.gas_usd * 2 + Math.min(50000, Math.max(500, Math.round(row.tvl_usd * 0.02))) * (0.001 + 0.05 * DATA.model.horizon_weeks / 52)).toFixed(0) }), el('div', { class: 'k', text: 'expected drop (' + (DATA.model.drop_share * 100).toFixed(0) + '% share)' })),
           el('div', { class: 'dstat' }, el('div', { class: 'v ' + (row.net_usd > 0 ? 'pos' : 'neg') }, el('span', null, (row.net_usd > 0 ? '+$' : '−$') + Math.abs(row.net_usd).toFixed(0))), el('div', { class: 'k', text: 'net of fees, ' + DATA.model.horizon_weeks + ' weeks' })),
           el('div', { class: 'dstat' }, el('div', { class: 'v ' + (row.net_usd > 0 ? 'pos' : 'neg') }, el('span', null, (row.net_per_hour > 0 ? '+$' : '−$') + Math.abs(row.net_per_hour).toFixed(1) + '/h')), el('div', { class: 'k', text: 'net per hour of work' }))
         ),

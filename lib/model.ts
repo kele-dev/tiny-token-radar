@@ -104,12 +104,14 @@ export interface BoardRow {
   age_days: number | null;
   implied_value_usd: number;
   model: {
-    base_multiple: number;
-    growth_pct: number;
-    growth_multiplier: number;
-    maturity_multiplier: number;
+    odds: number;
+    value_if_launch_usd: number;
+    p25_usd: number;
+    p75_usd: number;
     age_days: number | null;
   };
+  farm: { verdict: 'farm' | 'marginal' | 'skip'; deposit_usd: number; net_usd: number; net_per_hour: number; drop_usd: number };
+  parent: string | null;
   farm_steps: string[];
 }
 
@@ -133,6 +135,7 @@ export interface RadarRow {
   verdict: 'farm' | 'marginal' | 'skip';
   net_usd: number;
   net_per_hour: number;
+  parent: string | null;
   early: boolean;
 }
 
@@ -183,6 +186,8 @@ export interface Fit {
   value_loo_r2_age: number;
   value_resid_q25: number;
   value_resid_q75: number;
+  odds_wf_brier: number;
+  odds_wf_brier_base: number;
   ablation: { terms: string; loo_r2: number; wf_mae: number }[];
   odds_ablation: { terms: string; brier: number }[];
   accounting: { total: number; traded: number; pre_token: number; ranked: number; excluded: number };
@@ -368,8 +373,37 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   // The kept set: tvl only — the ablation table shows growth, age, chains and category all
   // fail to improve the held-out miss, so the value curve keeps log TVL alone.
 
-  // Odds ablation: drop-one Brier
-  const oddsAblation: { terms: string; brier: number }[] = [{ terms: 'full', brier: Math.round(brier * 1000) / 1000 }];
+  // Walk-forward Brier for the odds: the earlier-listed 70% of protocols fit the later 30%.
+  const agesAll = protocols.map((p) => ageDays(snapshot.as_of, p.listed_at) ?? medAge);
+  const orderAll = protocols.map((_, i) => i).sort((a, b) => agesAll[a]! - agesAll[b]!);
+  const trainIdx = orderAll.slice(0, Math.floor(n * 0.7));
+  const testIdx = orderAll.slice(Math.floor(n * 0.7));
+  const wfW = [0, 0, 0, 0];
+  for (let it = 0; it < model.logistic_steps; it++) {
+    const grad = [0, 0, 0, 0];
+    for (const i of trainIdx) {
+      const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]!;
+      const err = sigmoid(z) - y[i]!;
+      for (let a = 0; a < 4; a++) grad[a]! += err * Xs[i]![a]!;
+    }
+    for (let a = 0; a < 4; a++) wfW[a]! -= (lr * grad[a]!) / trainIdx.length;
+  }
+  let wfBrier = 0;
+  let wfBaseRate = 0;
+  for (const i of testIdx) {
+    const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]!;
+    wfBrier += (sigmoid(z) - y[i]!) ** 2;
+    wfBaseRate += y[i]!;
+  }
+  wfBaseRate = wfBaseRate / Math.max(1, testIdx.length);
+  const wfBrierBase = testIdx.reduce((s, i) => s + (wfBaseRate - y[i]!) ** 2, 0) / Math.max(1, testIdx.length);
+
+  // Odds ablation: in-sample, walk-forward, base rate
+  const oddsAblation: { terms: string; brier: number }[] = [
+    { terms: 'full (in-sample)', brier: Math.round(brier * 1000) / 1000 },
+    { terms: 'walk-forward', brier: Math.round((wfBrier / Math.max(1, testIdx.length)) * 1000) / 1000 },
+    { terms: 'base rate (walk-forward)', brier: Math.round(wfBrierBase * 1000) / 1000 },
+  ];
   for (const drop of [1, 2, 3]) {
     const w2 = w.slice();
     w2[drop] = 0;
@@ -394,6 +428,8 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     value_loo_r2_age: ablation[2]!.loo_r2,
     value_resid_q25: q(0.25),
     value_resid_q75: q(0.75),
+    odds_wf_brier: wfBrier / Math.max(1, testIdx.length),
+    odds_wf_brier_base: wfBrierBase,
     ablation,
     odds_ablation: oddsAblation,
     accounting,
@@ -422,13 +458,15 @@ export function valueIfLaunch(p: SnapshotProtocol, fit: Fit): number {
 }
 
 /** The row the board ranks: value if it launches times the odds it does. */
-export function impliedValue(p: SnapshotProtocol, asOf: string, fit: Fit, model: ModelConstants): { implied: number; odds: number; valueIf: number; p25: number; p75: number } {
+export function impliedValue(p: SnapshotProtocol, asOf: string, fit: Fit, model: ModelConstants, protocols: SnapshotProtocol[] = []): { implied: number; odds: number; valueIf: number; p25: number; p75: number; parent: string | null } {
   const odds = tokenOdds(p, asOf, fit, model);
   const valueIf = valueIfLaunch(p, fit);
-  const implied = Math.max(1, Math.round(valueIf * odds));
-  const p25 = Math.max(1, Math.round(Math.exp(Math.log(valueIf) + fit.value_resid_q25) * odds));
-  const p75 = Math.max(1, Math.round(Math.exp(Math.log(valueIf) + fit.value_resid_q75) * odds));
-  return { implied, odds, valueIf, p25, p75 };
+  const parent = protocols.length ? parentOf(p, protocols) : null;
+  const discount = parent === null ? 1 : PARENT_DISCOUNT;
+  const implied = Math.max(1, Math.round(valueIf * odds * discount));
+  const p25 = Math.max(1, Math.round(Math.exp(Math.log(valueIf) + fit.value_resid_q25) * odds * discount));
+  const p75 = Math.max(1, Math.round(Math.exp(Math.log(valueIf) + fit.value_resid_q75) * odds * discount));
+  return { implied, odds, valueIf, p25, p75, parent };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -462,6 +500,24 @@ function derivativeOfTraded(name: string, live: Set<string>): boolean {
   }
   return false;
 }
+
+/** The traded protocol whose name this protocol's name carries, if any: the parent that holds the token. */
+export function parentOf(p: SnapshotProtocol, protocols: SnapshotProtocol[]): string | null {
+  const flat = p.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (flat.length < 6) return null;
+  let best: string | null = null;
+  for (const q of protocols) {
+    if (q.slug === p.slug || !recordsToken(q)) continue;
+    const other = q.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (other.length >= 5 && flat.includes(other) && flat !== other) {
+      if (best === null || other.length > best.length) best = q.name;
+    }
+  }
+  return best;
+}
+
+/** The parent haircut: a child of a token-holding parent gets half the implied value — the parent holds the claim, not the child. */
+export const PARENT_DISCOUNT = 0.5;
 
 /** Whether a protocol is one the board may rank: pre-token, not an exchange, not a versioned pool, not a wrapped or staked product of one that trades. */
 export function isRankable(p: SnapshotProtocol, live: Set<string> = new Set()): boolean {
@@ -503,9 +559,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
 
   const scored = [...chosen.values()].map((p) => {
     const age = ageDays(snapshot.as_of, p.listed_at);
-    const { implied, odds, valueIf, p25, p75 } = impliedValue(p, snapshot.as_of, fit, model);
+    const { implied, odds, valueIf, p25, p75, parent } = impliedValue(p, snapshot.as_of, fit, model, snapshot.protocols);
     const farm = farmEconomics(p, implied, model);
-    return { p, implied, odds, valueIf, p25, p75, age, farm };
+    return { p, implied, odds, valueIf, p25, p75, age, farm, parent };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -531,6 +587,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       age_days: s.age,
     },
     farm: s.farm,
+    parent: s.parent,
     farm_steps: farmSteps(s.p, s.age, s.farm).map(stepText),
   }));
 }
@@ -596,9 +653,9 @@ export interface FarmEconomics {
 
 /** Expected drop value for a depositor: drop share of the implied value times the deposit's share of TVL. */
 export function farmEconomics(p: SnapshotProtocol, implied: number, model: ModelConstants): FarmEconomics {
-  const deposit = Math.min(model.deposit_usd, Math.max(100, Math.round(p.tvl_usd * 0.005)));
+  const deposit = Math.min(50000, Math.max(500, Math.round(p.tvl_usd * 0.02)));
   const drop = model.drop_share * implied * (deposit / Math.max(p.tvl_usd, 1));
-  const fees = model.gas_usd * 2 + deposit * 0.001;
+  const fees = model.gas_usd * 2 + deposit * 0.001 + deposit * 0.05 * (model.horizon_weeks / 52);
   const net = drop - fees;
   const netPerHour = net / model.hours_spent;
   const verdict = net >= model.farm_min_usd && netPerHour >= model.farm_min_per_hour ? 'farm' : net > 0 ? 'marginal' : 'skip';
@@ -686,6 +743,7 @@ export function radarRow(row: BoardRow, early: boolean): RadarRow {
     verdict: row.farm.verdict,
     net_usd: row.farm.net_usd,
     net_per_hour: row.farm.net_per_hour,
+    parent: row.parent,
     early,
   };
 }
