@@ -7,7 +7,7 @@
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', early: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', chain: 'all', verdict: 'all', early: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -26,18 +26,18 @@
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
   }
-  // The model in one function: the page recomputes a row from the snapshot figures and checks the
-  // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
+  // The model in one function: the page recomputes a row from the snapshot figures with the fitted
+  // coefficients and checks the number board.json carries, so the page's code and the board's data
+  // are visibly the same arithmetic.
   function impliedOf(row) {
     var m = DATA.model;
-    var growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var growthMult = 1 + (growth / 100) * m.growth_weight;
-    var age = row.age_days === null || row.age_days === undefined ? m.unknown_age_days : row.age_days;
-    var maturity = m.maturity_floor + (Math.min(Math.max(age, 0), m.maturity_days) / m.maturity_days) * m.maturity_range;
-    var chains = row.chains && row.chains.length ? row.chains.length : 1;
-    var chainMult = Math.min(m.chain_cap, 1 + Math.max(0, chains - 1) * m.chain_step);
-    var multiple = Math.min(m.multiple_cap, Math.max(m.multiple_floor, row.category_multiple === undefined ? 0.25 : row.category_multiple));
-    return Math.max(1, Math.round(row.tvl_usd * m.base_multiple * multiple * chainMult * growthMult * maturity));
+    var fit = DATA.fit;
+    var sig = function (z) { return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z)))); };
+    var age = (row.age_days === null || row.age_days === undefined ? m.unknown_age_days : row.age_days) / 365;
+    var growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d)) / 100;
+    var odds = sig(fit.odds.intercept + fit.odds.ln_tvl * Math.log(Math.max(row.tvl_usd, 1)) + fit.odds.years * age + fit.odds.growth100 * growth);
+    var valueIf = Math.exp(fit.value.intercept + fit.value.ln_tvl * Math.log(Math.max(row.tvl_usd, 1)));
+    return Math.max(1, Math.round(valueIf * odds));
   }
 
   function el(tag, attrs) {
@@ -137,6 +137,7 @@
       if (state.category !== 'all' && r.category !== state.category) return false;
       if (state.chain !== 'all' && (r.chains || []).indexOf(state.chain) < 0) return false;
       if (state.early && !r.early) return false;
+      if (state.verdict !== 'all' && r.verdict !== state.verdict) return false;
       if (!q) return true;
       var hay = [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
@@ -150,6 +151,8 @@
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
+      else if (key === 'odds') { av = a.odds; bv = b.odds; }
+      else if (key === 'net') { av = a.net_usd; bv = b.net_usd; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -159,14 +162,17 @@
 
 
   function modelStrip() {
+    var fit = DATA.fit;
     return el('div', { class: 'modelstrip' },
-      el('span', { class: 'cover', text: 'radar-2 ·' }),
-      el('span', null, 'implied value = ', el('b', { text: 'TVL' }), ' × ', el('b', { text: '0.25 scale' }), ' × ', el('b', { text: 'category multiple' }), ' × ', el('b', { text: 'chain' }), ' × ', el('b', { text: 'growth' }), ' × ', el('b', { text: 'maturity' })),
+      el('span', { class: 'cover', text: 'radar-3 ·' }),
+      el('span', null, 'implied value = ', el('b', { text: 'TVL^' + fit.value.ln_tvl.toFixed(2) }), ' × ', el('b', { text: 'token odds' }), ' — both fitted on this snapshot'),
       el('span', { class: 'sep', text: '·' }),
-      el('span', { text: "category multiple = median mcap/TVL of that category's own live-token protocols — the market's pricing, not a guess" }),
+      el('span', { text: 'value-if-launch: log mcap ~ log TVL on ' + fit.live_count + ' live tokens (LOO R² ' + fit.value_loo_r2.toFixed(2) + '; growth and age tested, they worsened it: dropped)' }),
+      el('span', { class: 'sep', text: '·' }),
+      el('span', { text: 'odds: logistic on ' + fit.protocol_count + ' protocols (Brier ' + fit.odds_brier.toFixed(3) + ' vs base ' + fit.odds_brier_base.toFixed(3) + ')' }),
       el('span', { class: 'sep', text: '·' }),
       el('span', { class: 'cover', text: '40/40' }),
-      el('span', { text: 'watchlist covered, every row one function, no name special-cased' })
+      el('span', { text: 'watchlist covered' })
     );
   }
 
@@ -192,10 +198,10 @@
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size }), el('span', { text: 'watchlist covered' })),
         el('div', { class: 'fact' }, el('b', { text: String(DATA.board_size) }), el('span', { text: 'rows scored' })),
-        el('div', { class: 'fact' }, el('b', { text: String(DATA.early_size) }), el('span', { text: 'early finds' })),
-        el('div', { class: 'fact' }, el('b', { text: fmtUsd(top.implied_value_usd) }), el('span', { text: 'top implied value' })),
-        el('div', { class: 'fact' }, el('b', { text: String(DATA.live_size) }), el('span', { text: 'live-token set aside' })),
-        el('div', { class: 'fact' }, el('b', { text: (DATA.model.base_multiple * 1).toFixed(2) + 'x' }), el('span', { text: 'scale on TVL' }))
+        el('div', { class: 'fact' }, el('b', { text: (DATA.fit.odds_brier).toFixed(3) + ' vs ' + DATA.fit.odds_brier_base.toFixed(3) }), el('span', { text: 'token-odds Brier vs base' })),
+        el('div', { class: 'fact' }, el('b', { text: (DATA.fit.value_loo_r2).toFixed(2) }), el('span', { text: 'value LOO R² (TVL only: growth, age tested and dropped)' })),
+        el('div', { class: 'fact' }, el('b', { text: String(DATA.fit.live_count) + ' / ' + String(DATA.fit.protocol_count) }), el('span', { text: 'live-token protocols the fit uses' })),
+        el('div', { class: 'fact' }, el('b', { text: fmtUsd(top.implied_value_usd) }), el('span', { text: 'top implied value' }))
       )
     );
   }
@@ -217,12 +223,18 @@
     chainSel.addEventListener('change', function () { state.chain = chainSel.value; writeHash(); render(); });
     var earlyTog = el('button', { type: 'button', class: 'tog' + (state.early ? ' on' : ''), 'aria-pressed': state.early ? 'true' : 'false', onclick: function () { state.early = !state.early; writeHash(); render(); } },
       el('span', { class: 'dot' }), 'early finds only');
+    var verdictSel = el('select', { id: 'verdict', 'aria-label': 'Filter by verdict' },
+      el('option', { value: 'all', text: 'All verdicts' }),
+      ['farm', 'marginal', 'skip'].map(function (v) { return el('option', { value: v, text: v, selected: state.verdict === v ? 'selected' : null }); })
+    );
+    verdictSel.addEventListener('change', function () { state.verdict = verdictSel.value; writeHash(); render(); });
     var pre = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-token', onclick: function () { state.tab = 'pre-token'; render(); } });
     var live = el('button', { type: 'button', 'aria-pressed': state.tab === 'live' ? 'true' : 'false', text: 'Live token', onclick: function () { state.tab = 'live'; render(); } });
     return el('div', { class: 'controls' },
       el('div', { class: 'field' }, el('label', { for: 'q', text: 'Search' }), search),
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
       el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), chainSel),
+      el('div', { class: 'field' }, el('label', { for: 'verdict', text: 'Verdict' }), verdictSel),
       el('div', { class: 'field' }, el('label', { text: 'Board' }), el('div', { class: 'tabs' }, pre, live)),
       el('div', { class: 'field' }, el('label', { text: 'Radar' }), earlyTog),
       el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' of ' + DATA.rows.length + ' rows' : DATA.live.length + ' live-token protocols' })
@@ -268,11 +280,16 @@
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + growthClass, text: growth }),
         el('td', { class: 'num', text: fmtAge(r.age_days) }),
+        el('td', { class: 'num', text: (r.odds * 100).toFixed(0) + '%' }),
+        el('td', null, el('div', { class: 'oddsbar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round(r.odds * 100)) + '%' }))),
+        el('td', { class: 'num', text: fmtUsd(r.value_if_launch_usd) }),
         el('td', null, el('div', { class: 'implied' },
           el('b', { text: fmtUsd(r.implied_value_usd) }),
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' }))
         )),
-        el('td', null, el('span', { class: 'status', text: 'no token' }))
+        el('td', { class: 'num rng', title: 'P25–P75: ' + fmtUsd(r.p25_usd) + ' – ' + fmtUsd(r.p75_usd), text: fmtUsd(r.p25_usd) + '–' + fmtUsd(r.p75_usd) }),
+        el('td', null, el('span', { class: 'verdict v-' + r.verdict, text: r.verdict.toUpperCase() })),
+        el('td', { class: 'num ' + (r.net_usd > 0 ? 'pos' : 'neg'), text: (r.net_usd > 0 ? '+' : '') + '$' + r.net_usd.toFixed(0) + ' · $' + r.net_per_hour.toFixed(1) + '/h' })
       );
       tbody.appendChild(tr);
     });
@@ -286,8 +303,13 @@
             sortHeader('tvl', 'TVL'),
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
+            el('th', { scope: 'col', text: 'Odds' }),
+            el('th', { scope: 'col', text: '' }),
+            sortHeader('tvl', 'If it launches'),
             sortHeader('implied', 'Implied value'),
-            el('th', { scope: 'col', text: 'Token' })
+            el('th', { scope: 'col', text: 'P25–P75' }),
+            el('th', { scope: 'col', text: 'Verdict' }),
+            el('th', { scope: 'col', text: 'Net / hour' })
           )),
           tbody
         )
@@ -367,28 +389,36 @@
       el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: '✕', onclick: function () { dialog.close(); } })
     ));
     var growth = row.change_7d === null ? 0 : Math.max(DATA.model.growth_floor, Math.min(DATA.model.growth_cap, row.change_7d));
+    var fit = DATA.fit;
     dialog.appendChild(el('div', { class: 'detail-body' },
       el('div', { class: 'dstats' },
-        el('div', { class: 'dstat big' }, el('div', { class: 'v', text: fmtUsd(row.implied_value_usd) }), el('div', { class: 'k', text: 'implied launch value' })),
+        el('div', { class: 'dstat big' }, el('div', { class: 'v', text: fmtUsd(row.implied_value_usd) }), el('div', { class: 'k', text: 'implied value = odds × value if it launches · P25–P75 ' + fmtUsd(row.p25_usd) + ' – ' + fmtUsd(row.p75_usd) })),
+        el('div', { class: 'dstat' }, el('div', { class: 'v', text: (row.odds * 100).toFixed(0) + '%' }), el('div', { class: 'k', text: 'token odds' })),
+        el('div', { class: 'dstat' }, el('div', { class: 'v', text: fmtUsd(row.value_if_launch_usd) }), el('div', { class: 'k', text: 'value if it launches' })),
         el('div', { class: 'dstat' }, el('div', { class: 'v', text: fmtUsd(row.tvl_usd) }), el('div', { class: 'k', text: 'TVL' })),
         el('div', { class: 'dstat' }, el('div', { class: 'v' + (row.change_7d !== null && row.change_7d >= 0 ? ' pos' : ' neg'), text: fmtPct(row.change_7d) }), el('div', { class: 'k', text: '7d TVL change' })),
-        el('div', { class: 'dstat' }, el('div', { class: 'v', text: fmtAge(row.age_days) }), el('div', { class: 'k', text: 'age, no token' })),
-        el('div', { class: 'dstat' }, el('div', { class: 'v', text: String((row.chains || []).length) }), el('div', { class: 'k', text: 'chains' })),
-        el('div', { class: 'dstat' }, el('div', { class: 'v', text: row.listed_at || '—' }), el('div', { class: 'k', text: 'listed since' }))
+        el('div', { class: 'dstat' }, el('div', { class: 'v', text: fmtAge(row.age_days) }), el('div', { class: 'k', text: 'age, no token' }))
       ),
       el('section', { class: 'detail-section' },
         el('h3', { text: 'The model, on this row' }),
         el('div', { class: 'equation' },
-          mrow('TVL', fmtUsd(row.tvl_usd), 100),
-          mrow('× scale', DATA.model.base_multiple.toFixed(2), DATA.model.base_multiple / 0.5 * 50),
-          mrow('× category multiple', (row.category_multiple || 0.25).toFixed(2), (row.category_multiple || 0.25) / 2 * 100, 'gold'),
-          mrow('× chain multiplier', (row.chain_multiplier || 1).toFixed(2), (row.chain_multiplier || 1) / 1.16 * 100),
-          mrow('× growth', row.growth_multiplier.toFixed(3), (row.growth_multiplier / 1.6) * 100, growth < 0 ? 'red' : ''),
-          mrow('× maturity', row.maturity_multiplier.toFixed(3), row.maturity_multiplier),
+          mrow('ln TVL', Math.log(Math.max(row.tvl_usd, 1)).toFixed(2), 100),
+          mrow('× value slope ' + fit.value.ln_tvl.toFixed(3), fmtUsd(row.value_if_launch_usd), 80, 'gold'),
+          mrow('× token odds (logistic: years +' + fit.odds.years.toFixed(2) + ', growth ' + fit.odds.growth100.toFixed(1) + ')', (row.odds * 100).toFixed(0) + '%', row.odds * 100, growth < 0 ? 'red' : ''),
           mrow('= implied value', fmtUsd(row.implied_value_usd), 100, 'gold')
         ),
         el('div', { class: 'xcheck' + (re === row.implied_value_usd ? ' ok' : '') }, re === row.implied_value_usd ? '✓ the page recomputes this row to ' + fmtUsd(re) + ', the same number board.json carries' : '⚠ the page recomputes ' + fmtUsd(re) + ', which differs from the board: the data would be stale'),
-        el('p', { class: 'sub', style: 'margin-top:8px', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. This is an estimate, not a price.' })
+        el('p', { class: 'sub', style: 'margin-top:8px', text: 'Model ' + DATA.model_version + ': fitted on the snapshot itself — value on ' + fit.live_count + ' live tokens (LOO R² ' + fit.value_loo_r2.toFixed(2) + '), odds on ' + fit.protocol_count + ' protocols (Brier ' + fit.odds_brier.toFixed(3) + ' vs ' + fit.odds_brier_base.toFixed(3) + ' base). This is an estimate, not a price.' })
+      ),
+      el('section', { class: 'detail-section' },
+        el('h3', { text: 'Farming, this scenario' }),
+        el('div', { class: 'dstats' },
+          el('div', { class: 'dstat' }, el('div', { class: 'v', text: '$' + DATA.model.deposit_usd.toLocaleString() }), el('div', { class: 'k', text: 'deposit (0.5% of TVL cap)' })),
+          el('div', { class: 'dstat' }, el('div', { class: 'v', text: '$' + (row.net_usd + DATA.model.gas_usd * 2 + Math.min(DATA.model.deposit_usd, Math.max(100, Math.round(row.tvl_usd * 0.005))) * 0.001).toFixed(0) }), el('div', { class: 'k', text: 'expected drop (' + (DATA.model.drop_share * 100).toFixed(0) + '% share)' })),
+          el('div', { class: 'dstat' }, el('div', { class: 'v ' + (row.net_usd > 0 ? 'pos' : 'neg') }, el('span', null, (row.net_usd > 0 ? '+$' : '−$') + Math.abs(row.net_usd).toFixed(0))), el('div', { class: 'k', text: 'net of fees, ' + DATA.model.horizon_weeks + ' weeks' })),
+          el('div', { class: 'dstat' }, el('div', { class: 'v ' + (row.net_usd > 0 ? 'pos' : 'neg') }, el('span', null, (row.net_per_hour > 0 ? '+$' : '−$') + Math.abs(row.net_per_hour).toFixed(1) + '/h')), el('div', { class: 'k', text: 'net per hour of work' }))
+        ),
+        el('div', { class: 'verdictline' }, el('span', { class: 'verdict v-' + row.verdict, text: row.verdict.toUpperCase() }), ' — ' + (row.verdict === 'farm' ? 'beats $' + DATA.model.farm_min_per_hour + '/h and $' + DATA.model.farm_min_usd + ' net: worth farming in this scenario.' : row.verdict === 'marginal' ? 'a positive but small expected net: farm only if you believe the odds are low.' : 'the fees eat the expected drop: skip in this scenario.' ))
       ),
       el('section', { class: 'detail-section' },
         el('h3', { text: 'Farm plan' }),
