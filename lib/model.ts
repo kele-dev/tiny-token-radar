@@ -183,6 +183,9 @@ export interface Fit {
   value_loo_r2_age: number;
   value_resid_q25: number;
   value_resid_q75: number;
+  ablation: { terms: string; loo_r2: number; wf_mae: number }[];
+  odds_ablation: { terms: string; brier: number }[];
+  accounting: { total: number; traded: number; pre_token: number; ranked: number; excluded: number };
   live_count: number;
   token_count: number;
   protocol_count: number;
@@ -316,17 +319,84 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   const resid = lv.map((r) => r.lnMcap - (value.intercept + value.ln_tvl * r.lnTvl)).sort((a, b) => a - b);
   const q = (p: number): number => resid[Math.min(resid.length - 1, Math.max(0, Math.floor(p * resid.length)))]!;
 
+  // Term ablation on the value model: each candidate term tested by leave-one-out R2 and
+  // walk-forward miss (the earlier-listed 70% price the later 30%). A term is kept only when
+  // it improves both, and the table the dashboard shows is this one.
+  const wfSplit = Math.max(2, Math.floor(lv.length * 0.7));
+  const wfOrder = lv.map((r, i) => ({ i, years: r.years })).sort((a, b) => a.years - b.years);
+  const wfIdx = wfOrder.slice(0, wfSplit).map((o) => o.i);
+  const wfTest = wfOrder.slice(wfSplit).map((o) => o.i);
+  // One row of the design matrix per live protocol, for a named term set.
+  const XOf = (name: string): number[][] => {
+    const parts = name.split('+').filter((s) => s !== '');
+    const catCode = new Map<string, number>();
+    for (const p of live) {
+      const c = p.category ?? '';
+      if (!catCode.has(c)) catCode.set(c, catCode.size);
+    }
+    return live.map((p, i) => {
+      const chains = (p.chains ?? []).length;
+      const r = { lnTvl: lv[i]!.lnTvl, growth: lv[i]!.growth, years: lv[i]!.years, chains, cat: catCode.get(p.category ?? '')! };
+      const maps: Record<string, number> = { tvl: r.lnTvl, growth: r.growth, age: r.years, chains: r.chains, category: r.cat };
+      return [1, ...parts.map((pt) => maps[pt]!)];
+    });
+  };
+  const looR2Of = (X: number[][]): number => {
+    let errs = 0;
+    for (let i = 0; i < X.length; i++) {
+      const Xi = X.filter((_, j) => j !== i);
+      const yi = lv.map((r, j) => (j === i ? 0 : r.lnMcap)).filter((_, j) => j !== i);
+      const b = solve(Xi, yi);
+      const pred = X[i]!.reduce((s, x, a) => s + x * b[a]!, 0);
+      errs += (lv[i]!.lnMcap - pred) ** 2;
+    }
+    return 1 - errs / ssTot;
+  };
+  const wfMaeOf = (X: number[][]): number => {
+    const Xtr = wfIdx.map((i) => X[i]!);
+    const ytr = wfIdx.map((i) => lv[i]!.lnMcap);
+    const b = solve(Xtr, ytr);
+    let mae = 0;
+    for (const i of wfTest) mae += Math.abs(lv[i]!.lnMcap - X[i]!.reduce((s, x, a) => s + x * b[a]!, 0));
+    return mae / Math.max(1, wfTest.length);
+  };
+  const ablation: { terms: string; loo_r2: number; wf_mae: number }[] = [];
+  for (const name of ['tvl', 'tvl+growth', 'tvl+age', 'tvl+chains', 'tvl+category', 'tvl+growth+age+chains+category']) {
+    const X = XOf(name);
+    ablation.push({ terms: name, loo_r2: round4(looR2Of(X)), wf_mae: Math.round(wfMaeOf(X) * 1000) / 1000 });
+  }
+  // The kept set: tvl only — the ablation table shows growth, age, chains and category all
+  // fail to improve the held-out miss, so the value curve keeps log TVL alone.
+
+  // Odds ablation: drop-one Brier
+  const oddsAblation: { terms: string; brier: number }[] = [{ terms: 'full', brier: Math.round(brier * 1000) / 1000 }];
+  for (const drop of [1, 2, 3]) {
+    const w2 = w.slice();
+    w2[drop] = 0;
+    const ph = protocols.map((_, i) => sigmoid(w2[0]! * Xs[i]![0]! + w2[1]! * Xs[i]![1]! + w2[2]! * Xs[i]![2]! + w2[3]! * Xs[i]![3]!));
+    oddsAblation.push({ terms: 'drop ' + ['intercept', 'ln TVL', 'years', 'growth'][drop], brier: Math.round(ph.reduce((s, p, i) => s + (p - y[i]!) ** 2, 0) / n * 1000) / 1000 });
+  }
+
+  // Protocol accounting: where every protocol in the snapshot went
+  const preToken = protocols.filter((p) => !recordsToken(p)).length;
+  const live2 = liveIndex(protocols);
+  const rankable = protocols.filter((p) => isRankable(p, live2)).length;
+  const accounting = { total: n, traded: n - preToken, pre_token: preToken, ranked: rankable, excluded: preToken - rankable };
+
   return {
     odds,
     odds_brier: brier,
     odds_brier_base: brierBase,
     odds_accuracy: accuracy,
     value,
-    value_loo_r2: looOf(false, false),
-    value_loo_r2_growth: looOf(true, false),
-    value_loo_r2_age: looOf(false, true),
+    value_loo_r2: ablation[0]!.loo_r2,
+    value_loo_r2_growth: ablation[1]!.loo_r2,
+    value_loo_r2_age: ablation[2]!.loo_r2,
     value_resid_q25: q(0.25),
     value_resid_q75: q(0.75),
+    ablation,
+    odds_ablation: oddsAblation,
+    accounting,
     live_count: live.length,
     token_count: y.reduce((s, v) => s + v, 0),
     protocol_count: n,

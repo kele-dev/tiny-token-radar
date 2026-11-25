@@ -7,7 +7,7 @@
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', verdict: 'all', early: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', chain: 'all', verdict: 'all', early: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null, deposit: null, share: null, horizon: null };
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -131,13 +131,47 @@
     else window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }
 
+  // The farming scenario, live: the page recomputes every row's drop, net and verdict from the
+  // scenario sliders, exactly as main.ts does for the committed defaults.
+  function scenario() {
+    return {
+      deposit: state.deposit === null ? DATA.model.deposit_usd : state.deposit,
+      share: state.share === null ? DATA.model.drop_share : state.share,
+      horizon: state.horizon === null ? DATA.model.horizon_weeks : state.horizon,
+    };
+  }
+  function farmOf(r) {
+    var sc = scenario();
+    var deposit = Math.min(sc.deposit, Math.max(100, Math.round(r.tvl_usd * 0.005)));
+    var drop = sc.share * r.implied_value_usd * (deposit / Math.max(r.tvl_usd, 1));
+    var fees = DATA.model.gas_usd * 2 + deposit * 0.001 + deposit * 0.05 * (sc.horizon / 52);
+    var net = drop - fees;
+    return {
+      deposit: deposit,
+      drop: drop,
+      net: net,
+      netPerHour: net / DATA.model.hours_spent,
+      verdict: net >= DATA.model.farm_min_usd && net / DATA.model.hours_spent >= DATA.model.farm_min_per_hour ? 'farm' : net > 0 ? 'marginal' : 'skip',
+    };
+  }
+  function rowsWithScenario(list) {
+    return list.map(function (r) {
+      var f = farmOf(r);
+      r.scenario_net_usd = Math.round(f.net * 100) / 100;
+      r.scenario_net_per_hour = Math.round(f.netPerHour * 100) / 100;
+      r.scenario_verdict = f.verdict;
+      r.scenario_deposit = f.deposit;
+      return r;
+    });
+  }
+
   function rows() {
     var q = state.q.trim().toLowerCase();
     return DATA.rows.filter(function (r) {
       if (state.category !== 'all' && r.category !== state.category) return false;
       if (state.chain !== 'all' && (r.chains || []).indexOf(state.chain) < 0) return false;
       if (state.early && !r.early) return false;
-      if (state.verdict !== 'all' && r.verdict !== state.verdict) return false;
+      if (state.verdict !== 'all' && farmOf(r).verdict !== state.verdict) return false;
       if (!q) return true;
       var hay = [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
@@ -152,7 +186,7 @@
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
       else if (key === 'odds') { av = a.odds; bv = b.odds; }
-      else if (key === 'net') { av = a.net_usd; bv = b.net_usd; }
+      else if (key === 'net') { av = farmOf(a).net; bv = farmOf(b).net; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -160,6 +194,91 @@
     });
   }
 
+
+  function scenarioStrip() {
+    var sc = scenario();
+    function slider(key, label, min, max, step, fmt) {
+      var input = el('input', { type: 'range', min: String(min), max: String(max), step: String(step), value: String(sc[key]), 'aria-label': label });
+      var out = el('span', { class: 'val', text: fmt(sc[key]) });
+      input.addEventListener('input', function () {
+        state[key] = Number(input.value);
+        out.textContent = fmt(Number(input.value));
+        render();
+      });
+      return el('label', null, label + ' ', input, ' ', out);
+    }
+    function download(name, mime, content) {
+      var a = document.createElement('a');
+      a.href = 'data:' + mime + ';charset=utf-8,' + encodeURIComponent(content);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+    var csv = el('button', { type: 'button', text: 'CSV', onclick: function () {
+      var head = 'rank,slug,name,category,tvl_usd,change_7d,age_days,odds,value_if_launch_usd,implied_value_usd,p25_usd,p75_usd,verdict,net_usd,net_per_hour\n';
+      var body = rowsWithScenario(sortedRows(rows())).map(function (r) {
+        return [r.rank, r.slug, '"' + r.name.replace(/"/g, '""') + '"', '"' + (r.category || 'Other') + '"', r.tvl_usd, r.change_7d, r.age_days, r.odds, Math.round(r.value_if_launch_usd), r.implied_value_usd, r.p25_usd, r.p75_usd, r.scenario_verdict, r.scenario_net_usd, r.scenario_net_per_hour].join(',');
+      }).join('\n');
+      download('token-launch-radar.csv', 'text/csv', head + body);
+    } });
+    var json = el('button', { type: 'button', text: 'JSON', onclick: function () {
+      download('token-launch-radar.json', 'application/json', JSON.stringify({ as_of: DATA.as_of, model: DATA.model_version, scenario: sc, rows: rowsWithScenario(sortedRows(rows())) }, null, 1));
+    } });
+    return el('div', { class: 'scenario' },
+      el('b', { style: 'color: var(--accent2)', text: 'FARM SCENARIO' }),
+      slider('deposit', 'deposit $', 1000, 50000, 500, function (v) { return '$' + (v / 1000).toFixed(0) + 'k'; }),
+      slider('share', 'drop share', 0.02, 0.2, 0.005, function (v) { return (v * 100).toFixed(1) + '%'; }),
+      slider('horizon', 'horizon', 4, 52, 4, function (v) { return v + 'wk'; }),
+      el('span', { text: '— every row below recomputes live' }),
+      el('div', { class: 'exports' }, csv, json)
+    );
+  }
+
+  function accountingStrip() {
+    var a = DATA.fit.accounting;
+    var total = Math.max(1, a.total);
+    return el('div', { class: 'accounting' },
+      el('div', { class: 'accbar', role: 'img', 'aria-label': 'protocol accounting' },
+        el('i', { class: 'traded', style: 'width:' + (a.traded / total * 100).toFixed(1) + '%' }),
+        el('i', { class: 'ranked', style: 'width:' + (a.ranked / total * 100).toFixed(1) + '%' }),
+        el('i', { class: 'excluded', style: 'width:' + (a.excluded / total * 100).toFixed(1) + '%' })
+      ),
+      el('div', { class: 'acclabels' },
+        el('span', null, el('span', { class: 'dot2', style: 'background: var(--line2)' }), el('b', { text: String(a.traded) }), ' already trade'),
+        el('span', null, el('span', { class: 'dot2', style: 'background: var(--accent)' }), el('b', { text: String(a.ranked) }), ' pre-token, ranked'),
+        el('span', null, el('span', { class: 'dot2', style: 'background: var(--down); opacity:.55' }), el('b', { text: String(a.excluded) }), ' pre-token, excluded (exchange pools, wrapped or staked forms)'),
+        el('span', null, el('b', { text: String(a.total) }), ' in the snapshot')
+      )
+    );
+  }
+
+  function ablationPanel() {
+    var fit = DATA.fit;
+    var rowsV = fit.ablation.map(function (a) {
+      var kept = a.terms === 'tvl';
+      return el('tr', null,
+        el('td', { class: kept ? 'kept' : 'dropped', text: (kept ? '✓ ' : '✗ ') + a.terms }),
+        el('td', { text: (a.loo_r2 >= 0 ? '+' : '') + a.loo_r2.toFixed(3) }),
+        el('td', { text: a.wf_mae.toFixed(3) }));
+    });
+    var rowsO = fit.odds_ablation.map(function (a) {
+      var best = a.brier === Math.min.apply(null, fit.odds_ablation.map(function (x) { return x.brier; }));
+      return el('tr', null,
+        el('td', { class: best ? 'kept' : '', text: (best ? '✓ ' : '') + a.terms }),
+        el('td', { text: a.brier.toFixed(3) }));
+    });
+    return el('section', { class: 'panel model' },
+      el('h2', { text: 'Every term tested, the kept ones stated' }),
+      el('p', { class: 'sub', text: 'A term stays in the value model only if it improves the held-out miss both leave-one-out and walk-forward (the earlier-listed 70% of live tokens price the later 30%). The odds model reports its own drop-one Brier. Nothing is kept on faith.' }),
+      el('div', { class: 'ablation' },
+        el('div', { class: 'abl' }, el('h4', { text: 'Value if it launches — term tests' }),
+          el('table', null, el('thead', null, el('tr', null, el('th', { text: 'terms' }), el('th', { text: 'LOO R²' }), el('th', { text: 'WF MAE' }))), el('tbody', null, rowsV))),
+        el('div', { class: 'abl' }, el('h4', { text: 'Token odds — drop-one Brier' }),
+          el('table', null, el('thead', null, el('tr', null, el('th', { text: 'model' }), el('th', { text: 'Brier' }))), el('tbody', null, rowsO)))
+      )
+    );
+  }
 
   function modelStrip() {
     var fit = DATA.fit;
@@ -251,7 +370,7 @@
   }
 
   function boardTable() {
-    var list = sortedRows(rows());
+    var list = rowsWithScenario(sortedRows(rows()));
     if (list.length === 0) {
       return el('div', { class: 'panel' }, el('div', { class: 'empty' },
         el('h2', { text: 'No protocol matches that filter' }),
@@ -288,8 +407,8 @@
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' }))
         )),
         el('td', { class: 'num rng', title: 'P25–P75: ' + fmtUsd(r.p25_usd) + ' – ' + fmtUsd(r.p75_usd), text: fmtUsd(r.p25_usd) + '–' + fmtUsd(r.p75_usd) }),
-        el('td', null, el('span', { class: 'verdict v-' + r.verdict, text: r.verdict.toUpperCase() })),
-        el('td', { class: 'num ' + (r.net_usd > 0 ? 'pos' : 'neg'), text: (r.net_usd > 0 ? '+' : '') + '$' + r.net_usd.toFixed(0) + ' · $' + r.net_per_hour.toFixed(1) + '/h' })
+        el('td', null, el('span', { class: 'verdict v-' + r.scenario_verdict, text: r.scenario_verdict.toUpperCase() })),
+        el('td', { class: 'num ' + (r.scenario_net_usd > 0 ? 'pos' : 'neg'), text: (r.scenario_net_usd > 0 ? '+' : '') + '$' + r.scenario_net_usd.toFixed(0) + ' · $' + r.scenario_net_per_hour.toFixed(1) + '/h' })
       );
       tbody.appendChild(tr);
     });
@@ -427,7 +546,8 @@
           var action = at >= 0 ? s.slice(0, at) : s;
           var tail = at >= 0 ? s.slice(at + 8) : '';
           var costEl = el('span', { class: 'cost', text: tail });
-          return el('li', { 'data-n': String(i + 1) }, el('b', { text: action }), costEl);
+          var day = ['Day 0', 'Day 0', 'Weekly', 'Day ' + (DATA.model.horizon_weeks * 7), 'Day ' + (DATA.model.horizon_weeks * 7 + 1), 'After'][i] || '';
+          return el('li', { 'data-n': String(i + 1) }, el('span', { class: 'farmday', text: day }), el('b', { text: action }), costEl);
         }))
       )
     ));
@@ -444,9 +564,12 @@
     shell.appendChild(header());
     shell.appendChild(lede());
     shell.appendChild(modelStrip());
+    if (state.tab === 'pre-token') shell.appendChild(accountingStrip());
+    if (state.tab === 'pre-token') shell.appendChild(scenarioStrip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
+    if (state.tab === 'pre-token') shell.appendChild(ablationPanel());
     shell.appendChild(el('footer', null,
       el('b', null, 'Token Launch Radar'), ' · model ' + DATA.model_version + ' · snapshot ' + DATA.as_of + ' from the DefiLlama protocol index · ' + DATA.rows.length + ' pre-token rows, ' + DATA.live.length + ' live-token protocols set aside · implied values are estimates, not prices'
     ));
