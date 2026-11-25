@@ -188,6 +188,8 @@ export interface Fit {
   value_resid_q75: number;
   odds_wf_brier: number;
   odds_wf_brier_base: number;
+  band_cover_50: number;
+  band_cover_80: number;
   ablation: { terms: string; loo_r2: number; wf_mae: number }[];
   odds_ablation: { terms: string; brier: number }[];
   accounting: { total: number; traded: number; pre_token: number; ranked: number; excluded: number };
@@ -417,6 +419,16 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   const rankable = protocols.filter((p) => isRankable(p, live2)).length;
   const accounting = { total: n, traded: n - preToken, pre_token: preToken, ranked: rankable, excluded: preToken - rankable };
 
+  // Is the printed range honest? The share of live protocols whose actual market cap falls
+  // inside the model's P25-P75 and P10-P90 bands, measured on the same fit.
+  let cover50 = 0;
+  let cover80 = 0;
+  for (let i = 0; i < lv.length; i++) {
+    const r = lv[i]!.lnMcap - (value.intercept + value.ln_tvl * lv[i]!.lnTvl);
+    if (q(0.25) <= r && r <= q(0.75)) cover50++;
+    if (q(0.10) <= r && r <= q(0.90)) cover80++;
+  }
+
   return {
     odds,
     odds_brier: brier,
@@ -430,6 +442,8 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     value_resid_q75: q(0.75),
     odds_wf_brier: wfBrier / Math.max(1, testIdx.length),
     odds_wf_brier_base: wfBrierBase,
+    band_cover_50: cover50 / lv.length,
+    band_cover_80: cover80 / lv.length,
     ablation,
     odds_ablation: oddsAblation,
     accounting,

@@ -289,7 +289,7 @@
       el('span', { class: 'cover', text: 'radar-3 ·' }),
       el('span', null, 'implied value = ', el('b', { text: 'TVL^' + fit.value.ln_tvl.toFixed(2) }), ' × ', el('b', { text: 'token odds' }), ' — both fitted on this snapshot'),
       el('span', { class: 'sep', text: '·' }),
-      el('span', { text: 'value-if-launch: log mcap ~ log TVL on ' + fit.live_count + ' live tokens (LOO R² ' + fit.value_loo_r2.toFixed(2) + '; growth and age tested, they worsened it: dropped)' }),
+      el('span', { text: 'value-if-launch: log mcap ~ log TVL on ' + fit.live_count + ' live tokens (LOO R² ' + fit.value_loo_r2.toFixed(2) + '; the printed range is honest: ' + Math.round(fit.band_cover_50 * 100) + '% / ' + Math.round(fit.band_cover_80 * 100) + '% of real caps fall inside P25–P75 / P10–P90)' }),
       el('span', { class: 'sep', text: '·' }),
       el('span', { text: 'odds: logistic on ' + fit.protocol_count + ' protocols (Brier ' + fit.odds_brier.toFixed(3) + ' vs base ' + fit.odds_brier_base.toFixed(3) + '; walk-forward ' + fit.odds_wf_brier.toFixed(3) + ' vs ' + fit.odds_wf_brier_base.toFixed(3) + ')' }),
       el('span', { class: 'sep', text: '·' }),
@@ -322,7 +322,7 @@
         el('div', { class: 'fact' }, el('b', { text: String(DATA.board_size) }), el('span', { text: 'rows' })),
         el('div', { class: 'fact' }, el('b', { text: DATA.fit.odds_brier.toFixed(3) }), el('span', { text: 'odds Brier < ' + DATA.fit.odds_brier_base.toFixed(3) + ' base' })),
         el('div', { class: 'fact' }, el('b', { text: DATA.fit.value_loo_r2.toFixed(2) }), el('span', { text: 'value LOO R²' })),
-        el('div', { class: 'fact' }, el('b', { text: String(DATA.fit.live_count) }), el('span', { text: 'live tokens fit' })),
+        el('div', { class: 'fact' }, el('b', { text: Math.round(DATA.fit.band_cover_50 * 100) + '% · ' + Math.round(DATA.fit.band_cover_80 * 100) + '%' }), el('span', { text: 'band honesty (nominal 50 · 80)' })),
         el('div', { class: 'fact' }, el('b', { text: fmtUsd(top.implied_value_usd) }), el('span', { text: 'top implied' }))
       )
     );
