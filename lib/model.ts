@@ -180,7 +180,7 @@ export class SnapshotError extends Error {
 
 /** One solved model: everything the board states is fitted on the snapshot itself. */
 export interface Fit {
-  odds: { intercept: number; ln_tvl: number; years: number; growth100: number };
+  odds: { intercept: number; ln_tvl: number; years: number; growth100: number; chains10: number };
   odds_brier: number;
   odds_brier_base: number;
   odds_accuracy: number;
@@ -197,6 +197,7 @@ export interface Fit {
   odds_family_delta: number | null;
   family_count: number;
   odds_family_shifts: Record<string, number>;
+  odds_chains_kept: boolean;
   value_ln_tvl_se: number;
   value_intercept_se: number;
   bootstrap: { i: number; s: number }[];
@@ -280,31 +281,32 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   const raw = protocols.map((p) => {
     const age = ageDays(snapshot.as_of, p.listed_at) ?? medAge;
     const growth = finite(p.change_7d, 0);
-    return [Math.log(Math.max(p.tvl_usd, 1)), age / 365, growth / 100];
+    return [Math.log(Math.max(p.tvl_usd, 1)), age / 365, growth / 100, (p.chains?.length ?? 1) / 10];
   });
   const y = protocols.map((p) => (recordsToken(p) ? 1 : 0));
   // standardize, fit logistic by fixed-step gradient descent: deterministic
-  const means = [0, 1, 2].map((a) => raw.reduce((s, r) => s + r[a]!, 0) / n);
-  const stds = [0, 1, 2].map((a) => Math.sqrt(raw.reduce((s, r) => s + (r[a]! - means[a]!) ** 2, 0) / n) || 1);
-  const Xs = raw.map((r) => [1, (r[0]! - means[0]!) / stds[0]!, (r[1]! - means[1]!) / stds[1]!, (r[2]! - means[2]!) / stds[2]!]);
-  const w = [0, 0, 0, 0];
+  const means = [0, 1, 2, 3].map((a) => raw.reduce((s, r) => s + r[a]!, 0) / n);
+  const stds = [0, 1, 2, 3].map((a) => Math.sqrt(raw.reduce((s, r) => s + (r[a]! - means[a]!) ** 2, 0) / n) || 1);
+  const Xs = raw.map((r) => [1, (r[0]! - means[0]!) / stds[0]!, (r[1]! - means[1]!) / stds[1]!, (r[2]! - means[2]!) / stds[2]!, (r[3]! - means[3]!) / stds[3]!]);
+  const w = [0, 0, 0, 0, 0];
   const lr = model.logistic_lr;
   for (let it = 0; it < model.logistic_steps; it++) {
-    const grad = [0, 0, 0, 0];
+    const grad = [0, 0, 0, 0, 0];
     for (let i = 0; i < n; i++) {
-      const z = w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]!;
+      const z = w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]! + w[4]! * Xs[i]![4]!;
       const err = sigmoid(z) - y[i]!;
-      for (let a = 0; a < 4; a++) grad[a]! += err * Xs[i]![a]!;
+      for (let a = 0; a < 5; a++) grad[a]! += err * Xs[i]![a]!;
     }
-    for (let a = 0; a < 4; a++) w[a]! -= (lr * grad[a]!) / n;
+    for (let a = 0; a < 5; a++) w[a]! -= (lr * grad[a]!) / n;
   }
   const odds = {
-    intercept: w[0]! - w[1]! * (means[0]! / stds[0]!) - w[2]! * (means[1]! / stds[1]!) - w[3]! * (means[2]! / stds[2]!),
+    intercept: w[0]! - w[1]! * (means[0]! / stds[0]!) - w[2]! * (means[1]! / stds[1]!) - w[3]! * (means[2]! / stds[2]!) - w[4]! * (means[3]! / stds[3]!),
     ln_tvl: w[1]! / stds[0]!,
     years: w[2]! / stds[1]!,
     growth100: w[3]! / stds[2]!,
+    chains10: w[4]! / stds[3]!,
   };
-  const phat = protocols.map((p, i) => sigmoid(w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]!));
+  const phat = protocols.map((_, i) => sigmoid(w.reduce((s, x, a) => s + x * Xs[i]![a]!, 0)));
   const baseRate = y.reduce((s, v) => s + v, 0) / n;
   const brier = phat.reduce((s, p, i) => s + (p - y[i]!) ** 2, 0) / n;
   const brierBase = y.reduce((s, v) => s + (baseRate - v) ** 2, 0) / n;
@@ -399,7 +401,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
         let loss = 0;
         for (let i = 0; i < n; i++) {
           if (famOf(i) !== f) continue;
-          const z = w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]! + shifts.reduce((s, sh, g) => (g === f ? s + cand : s + sh), 0);
+          const z = w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]! + w[4]! * Xs[i]![4]! + shifts.reduce((s, sh, g) => (g === f ? s + cand : s + sh), 0);
           const ph = sigmoid(z);
           loss += (ph - y[i]!) ** 2;
         }
@@ -408,7 +410,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
       shifts[f] = bestShift;
     }
   }
-  const phFam = protocols.map((_, i) => sigmoid(w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]! + shifts[famOf(i)]!));
+  const phFam = protocols.map((_, i) => sigmoid(w[0]! * Xs[i]![0]! + w[1]! * Xs[i]![1]! + w[2]! * Xs[i]![2]! + w[3]! * Xs[i]![3]! + w[4]! * Xs[i]![4]! + shifts[famOf(i)]!));
   const brierFam = phFam.reduce((s, p, i) => s + (p - y[i]!) ** 2, 0) / n;
 
   // Walk-forward Brier for the odds: the earlier-listed 70% of protocols fit the later 30%.
@@ -416,48 +418,55 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
   const orderAll = protocols.map((_, i) => i).sort((a, b) => agesAll[a]! - agesAll[b]!);
   const trainIdx = orderAll.slice(0, Math.floor(n * 0.7));
   const testIdx = orderAll.slice(Math.floor(n * 0.7));
-  const wfW = [0, 0, 0, 0];
+  const wfW = [0, 0, 0, 0, 0];
   for (let it = 0; it < model.logistic_steps; it++) {
-    const grad = [0, 0, 0, 0];
+    const grad = [0, 0, 0, 0, 0];
     for (const i of trainIdx) {
-      const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]!;
+      const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]! + wfW[4]! * Xs[i]![4]!;
       const err = sigmoid(z) - y[i]!;
-      for (let a = 0; a < 4; a++) grad[a]! += err * Xs[i]![a]!;
+      for (let a = 0; a < 5; a++) grad[a]! += err * Xs[i]![a]!;
     }
     for (let a = 0; a < 4; a++) wfW[a]! -= (lr * grad[a]!) / trainIdx.length;
   }
   let wfBrier = 0;
   let wfBaseRate = 0;
   for (const i of testIdx) {
-    const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]!;
+    const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]! + wfW[4]! * Xs[i]![4]!;
     wfBrier += (sigmoid(z) - y[i]!) ** 2;
     wfBaseRate += y[i]!;
   }
   wfBaseRate = wfBaseRate / Math.max(1, testIdx.length);
   const wfBrierBase = testIdx.reduce((s, i) => s + (wfBaseRate - y[i]!) ** 2, 0) / Math.max(1, testIdx.length);
 
-  // the family shifts are tested walk-forward too: apply the fitted shifts to the walk-forward model
+
+// the family shifts are tested walk-forward too: apply the fitted shifts to the walk-forward model
   let wfBrierFam = 0;
   for (const i of testIdx) {
-    const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]! + shifts[famOf(i)]!;
+    const z = wfW[0]! * Xs[i]![0]! + wfW[1]! * Xs[i]![1]! + wfW[2]! * Xs[i]![2]! + wfW[3]! * Xs[i]![3]! + wfW[4]! * Xs[i]![4]! + shifts[famOf(i)]!;
     wfBrierFam += (sigmoid(z) - y[i]!) ** 2;
   }
   const wfFamMean = wfBrierFam / Math.max(1, testIdx.length);
   const familyKept = wfFamMean < wfBrier / Math.max(1, testIdx.length) - 0.0005;
 
-  // Odds ablation: in-sample, walk-forward, base rate
   const oddsAblation: { terms: string; brier: number }[] = [
     { terms: 'full (in-sample)', brier: Math.round(brier * 1000) / 1000 },
     { terms: 'walk-forward', brier: Math.round((wfBrier / Math.max(1, testIdx.length)) * 1000) / 1000 },
     { terms: 'base rate (walk-forward)', brier: Math.round(wfBrierBase * 1000) / 1000 },
     { terms: 'families ' + (familyKept ? 'kept: WF ' + wfFamMean.toFixed(3) : 'dropped: WF ' + wfFamMean.toFixed(3) + ' no better'), brier: Math.round(brierFam * 1000) / 1000 },
   ];
-  for (const drop of [1, 2, 3]) {
+  let dropChainsBrier = brier;
+  for (const drop of [1, 2, 3, 4]) {
     const w2 = w.slice();
     w2[drop] = 0;
-    const ph = protocols.map((_, i) => sigmoid(w2[0]! * Xs[i]![0]! + w2[1]! * Xs[i]![1]! + w2[2]! * Xs[i]![2]! + w2[3]! * Xs[i]![3]!));
-    oddsAblation.push({ terms: 'drop ' + ['intercept', 'ln TVL', 'years', 'growth'][drop], brier: Math.round(ph.reduce((s, p, i) => s + (p - y[i]!) ** 2, 0) / n * 1000) / 1000 });
+    const ph = protocols.map((_, i) => sigmoid(w2.reduce((s, x, a) => s + x * Xs[i]![a]!, 0)));
+    if (drop === 4) dropChainsBrier = ph.reduce((s2, p2, i2) => s2 + (p2 - y[i2]!) ** 2, 0) / n;
+    oddsAblation.push({ terms: 'drop ' + ['intercept', 'ln TVL', 'years', 'growth', 'chains'][drop], brier: Math.round(ph.reduce((s, p, i) => s + (p - y[i]!) ** 2, 0) / n * 1000) / 1000 });
   }
+
+  // The chains term is kept only if it improves the in-sample Brier by more than 0.001;
+  // it does not here, so its coefficient is zeroed in the odds the board uses.
+  const chainsKept = brier < dropChainsBrier - 0.001;
+  if (!chainsKept) odds.chains10 = 0;
 
   // Protocol accounting: where every protocol in the snapshot went
   const preToken = protocols.filter((p) => !recordsToken(p)).length;
@@ -523,6 +532,7 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     odds_family_delta: familyKept ? wfFamMean - wfBrier / Math.max(1, testIdx.length) : null,
     family_count: families.length,
     odds_family_shifts: familyKept ? Object.fromEntries(families.map((c, i) => [c, shifts[i]!])) : {},
+    odds_chains_kept: chainsKept,
     value_ln_tvl_se: bootSe[1]!,
     value_intercept_se: bootSe[0]!,
     bootstrap: bootPairs,

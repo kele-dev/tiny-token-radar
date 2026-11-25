@@ -36,7 +36,8 @@
     var age = (row.age_days === null || row.age_days === undefined ? m.unknown_age_days : row.age_days) / 365;
     var growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d)) / 100;
     var shift = (fit.odds_family_shifts || {})[row.category || 'Other'] || 0;
-    var odds = sig(fit.odds.intercept + fit.odds.ln_tvl * Math.log(Math.max(row.tvl_usd, 1)) + fit.odds.years * age + fit.odds.growth100 * growth + shift);
+    var chains = ((row.chains || []).length) / 10;
+    var odds = sig(fit.odds.intercept + fit.odds.ln_tvl * Math.log(Math.max(row.tvl_usd, 1)) + fit.odds.years * age + fit.odds.growth100 * growth + (fit.odds.chains10 || 0) * chains + shift);
     var valueIf = Math.exp(fit.value.intercept + fit.value.ln_tvl * Math.log(Math.max(row.tvl_usd, 1)));
     return Math.max(1, Math.round(valueIf * odds));
   }
