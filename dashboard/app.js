@@ -149,6 +149,7 @@
     return {
       deposit: deposit,
       drop: drop,
+      fees: fees,
       net: net,
       netPerHour: net / DATA.model.hours_spent,
       verdict: net >= DATA.model.farm_min_usd && net / DATA.model.hours_spent >= DATA.model.farm_min_per_hour ? 'farm' : net > 0 ? 'marginal' : 'skip',
@@ -161,6 +162,8 @@
       r.scenario_net_per_hour = Math.round(f.netPerHour * 100) / 100;
       r.scenario_verdict = f.verdict;
       r.scenario_deposit = f.deposit;
+      r.scenario_drop_usd = Math.round(f.drop * 100) / 100;
+      r.scenario_fees_usd = Math.round(f.fees * 100) / 100;
       return r;
     });
   }
@@ -394,7 +397,7 @@
         el('td', { class: 'rk' }, r.rank <= 3 ? el('b', { text: String(r.rank) }) : String(r.rank)),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
-          el('span', { class: 'sub' }, [el('span', { class: 'cat', text: r.category || 'Other' }), r.early ? el('span', { class: 'early-tag', text: ' EARLY' }) : null, r.parent ? el('span', { class: 'early-tag', style: 'color: var(--down)', text: ' PARENT ×0.5' }) : null, el('div', { class: 'chips', style: 'margin-top:3px' }, chips)])
+          el('span', { class: 'sub' }, [el('span', { class: 'cat', text: r.category || 'Other' }), r.early ? el('span', { class: 'early-tag', text: ' EARLY' }) : el('span', { class: 'wl-tag', text: 'WATCHLIST' }), r.parent ? el('span', { class: 'early-tag', style: 'color: var(--down)', text: ' PARENT ×0.5' }) : null, el('div', { class: 'chips', style: 'margin-top:3px' }, chips)])
         )),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + growthClass, text: growth }),
@@ -408,7 +411,7 @@
         )),
         el('td', { class: 'num rng', title: 'P25–P75: ' + fmtUsd(r.p25_usd) + ' – ' + fmtUsd(r.p75_usd), text: fmtUsd(r.p25_usd) + '–' + fmtUsd(r.p75_usd) }),
         el('td', null, el('span', { class: 'verdict v-' + r.scenario_verdict, text: r.scenario_verdict.toUpperCase() })),
-        el('td', { class: 'num ' + (r.scenario_net_usd > 0 ? 'pos' : 'neg'), text: (r.scenario_net_usd > 0 ? '+' : '') + '$' + r.scenario_net_usd.toFixed(0) + ' · $' + r.scenario_net_per_hour.toFixed(1) + '/h' })
+        el('td', { class: 'num ' + (r.scenario_net_usd > 0 ? 'pos' : 'neg') }, el('b', { text: (r.scenario_net_usd > 0 ? '+$' : '−$') + Math.abs(r.scenario_net_usd).toFixed(0) }), el('span', { class: 'brk', text: 'drop $' + r.scenario_drop_usd.toFixed(0) + ' − fees $' + r.scenario_fees_usd.toFixed(0) + ' · $' + r.scenario_net_per_hour.toFixed(1) + '/h' }))
       );
       tbody.appendChild(tr);
     });
