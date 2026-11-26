@@ -284,3 +284,12 @@ td.rng2 b { color: var(--text); }
 /* radar-9: rank range under the rank */
 td.rk { line-height: 1.15; }
 td.rk .rr { display: block; color: var(--accent2); font-size: 9px; font-family: var(--font-num); }
+
+/* integrity badges */
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.ib {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 999px;
+  background: rgba(52, 211, 153, .08); color: var(--up); border: 1px solid rgba(52, 211, 153, .3);
+  font-size: 10.5px; font-weight: 600; font-family: var(--font-num);
+}
+.ib.bad { color: var(--down); background: rgba(248, 113, 113, .08); border-color: rgba(248, 113, 113, .35); }

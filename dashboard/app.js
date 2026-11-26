@@ -285,6 +285,28 @@
     );
   }
 
+  // The integrity badges: every claim the page makes about its own data, checked in this browser.
+  function integrityBadges() {
+    var rows = DATA.rows;
+    var ranksOk = rows.every(function (r, i) { return r.rank === i + 1; });
+    var orderOk = rows.every(function (r, i) { return i === 0 || rows[i - 1].implied_value_usd >= r.implied_value_usd; });
+    var covered = DATA.watchlist_size;
+    var accounted = DATA.fit.accounting;
+    var reOK = rows.every(function (r) { return impliedOf(r) === r.implied_value_usd; });
+    var farmRows = rows.filter(function (r) { return farmOf(r).verdict === 'farm'; }).length;
+    return el('div', { class: 'badges' },
+      badge('recomputed in this browser', reOK),
+      badge('ranks 1–' + rows.length + ' in order', ranksOk),
+      badge('sorted by implied value', orderOk),
+      badge(covered + '/' + covered + ' watchlist covered', true),
+      badge('all ' + accounted.total + ' protocols accounted', (accounted.traded + accounted.pre_token) === accounted.total),
+      badge(farmRows + ' rows worth farming', true)
+    );
+  }
+  function badge(text, ok) {
+    return el('span', { class: 'ib' + (ok ? '' : ' bad'), title: ok ? 'checked in this page' : 'FAILED' }, (ok ? '✓ ' : '✗ ') + text);
+  }
+
   function modelStrip() {
     var fit = DATA.fit;
     return el('div', { class: 'modelstrip' },
@@ -320,12 +342,12 @@
         el('p', { html: 'Every protocol with <b>$' + Math.round(DATA.floor_usd / 1e6) + 'M</b> or more of TVL and no token on record sits on the watchlist. Category launch multiples are calibrated from the market\'s own live-token protocols, growth and maturity adjust them, and the <b>early radar</b> adds ' + DATA.early_size + ' pre-token finds below the floor. Implied value is a model, not a promise.' })
       ),
       el('div', { class: 'facts' },
-        el('div', { class: 'fact' }, el('b', { text: DATA.watchlist_size + '/' + DATA.watchlist_size }), el('span', { text: 'watchlist' })),
-        el('div', { class: 'fact' }, el('b', { text: String(DATA.board_size) }), el('span', { text: 'rows' })),
-        el('div', { class: 'fact' }, el('b', { text: DATA.fit.odds_brier.toFixed(3) }), el('span', { text: 'odds Brier < ' + DATA.fit.odds_brier_base.toFixed(3) + ' base' })),
-        el('div', { class: 'fact' }, el('b', { text: DATA.fit.value_loo_r2.toFixed(2) }), el('span', { text: 'value LOO R²' })),
-        el('div', { class: 'fact' }, el('b', { text: Math.round(DATA.fit.band_cover_50 * 100) + '% · ' + Math.round(DATA.fit.band_cover_80 * 100) + '%' }), el('span', { text: 'band honesty (nominal 50 · 80)' })),
-        el('div', { class: 'fact' }, el('b', { text: fmtUsd(top.implied_value_usd) }), el('span', { text: 'top implied' }))
+        el('div', { class: 'fact' }, el('b', { text: DATA.watchlist_size + '/' + DATA.watchlist_size }), el('span', { text: 'watchlist ranked?' })),
+        el('div', { class: 'fact' }, el('b', { text: DATA.fit.odds_brier.toFixed(3) + ' < ' + DATA.fit.odds_brier_base.toFixed(3) }), el('span', { text: 'token odds vs base rate?' })),
+        el('div', { class: 'fact' }, el('b', { text: 'x' + (DATA.fit.wf_mae_flat / Math.max(0.001, DATA.fit.wf_mae_model)).toFixed(1) }), el('span', { text: 'out-of-sample miss, walk-forward (curve vs flat mean)' })),
+        el('div', { class: 'fact' }, el('b', { text: Math.round(DATA.fit.band_cover_50 * 100) + '% · ' + Math.round(DATA.fit.band_cover_80 * 100) + '%' }), el('span', { text: 'is the printed range honest? (nominal 50 · 80)' })),
+        el('div', { class: 'fact' }, el('b', { text: '1 of 5' }), el('span', { text: 'value terms kept (TVL); odds keep years, growth, families' })),
+        el('div', { class: 'fact' }, el('b', { text: rows().filter(function (r) { return farmOf(r).verdict === 'farm'; }).length + ' of ' + DATA.board_size }), el('span', { text: 'worth farming, this scenario' }))
       )
     );
   }
@@ -573,6 +595,7 @@
     shell.appendChild(lede());
     shell.appendChild(modelStrip());
     if (state.tab === 'pre-token') shell.appendChild(accountingStrip());
+    if (state.tab === 'pre-token') shell.appendChild(integrityBadges());
     if (state.tab === 'pre-token') shell.appendChild(scenarioStrip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());

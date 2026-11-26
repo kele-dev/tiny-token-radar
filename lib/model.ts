@@ -198,6 +198,8 @@ export interface Fit {
   family_count: number;
   odds_family_shifts: Record<string, number>;
   odds_chains_kept: boolean;
+  wf_mae_flat: number;
+  wf_mae_model: number;
   value_ln_tvl_se: number;
   value_intercept_se: number;
   bootstrap: { i: number; s: number }[];
@@ -463,6 +465,15 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     oddsAblation.push({ terms: 'drop ' + ['intercept', 'ln TVL', 'years', 'growth', 'chains'][drop], brier: Math.round(ph.reduce((s, p, i) => s + (p - y[i]!) ** 2, 0) / n * 1000) / 1000 });
   }
 
+  // The flat baseline: what a mean-only model misses walk-forward, against the curve's own miss.
+  let flatMiss = 0;
+  {
+    const trainY = wfIdx.map((i) => lv[i]!.lnMcap);
+    const mean = trainY.reduce((s, v) => s + v, 0) / trainY.length;
+    for (const i of wfTest) flatMiss += Math.abs(lv[i]!.lnMcap - mean);
+  }
+  const flatMae = flatMiss / Math.max(1, wfTest.length);
+
   // The chains term is kept only if it improves the in-sample Brier by more than 0.001;
   // it does not here, so its coefficient is zeroed in the odds the board uses.
   const chainsKept = brier < dropChainsBrier - 0.001;
@@ -533,6 +544,8 @@ export function fitModel(snapshot: Snapshot, model: ModelConstants = MODEL): Fit
     family_count: families.length,
     odds_family_shifts: familyKept ? Object.fromEntries(families.map((c, i) => [c, shifts[i]!])) : {},
     odds_chains_kept: chainsKept,
+    wf_mae_flat: flatMae,
+    wf_mae_model: ablation[0]!.wf_mae,
     value_ln_tvl_se: bootSe[1]!,
     value_intercept_se: bootSe[0]!,
     bootstrap: bootPairs,
